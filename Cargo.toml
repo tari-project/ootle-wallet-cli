@@ -2,6 +2,42 @@
 name = "ootle-wallet-cli"
 version = "0.1.0"
 edition = "2024"
+authors = ["The Tari Project"]
+description = "Ootle Wallet Command Line Interface"
+license = "BSD-3-Clause"
 
 [dependencies]
-clap = { version = "4.4", features = ["derive"] }
+#tari_ootle_wallet_sdk = { git = "https://github.com/tari-project/tari-ootle.git", branch = "development" }
+#tari_ootle_wallet_sdk_services = { git = "https://github.com/tari-project/tari-ootle.git", branch = "development" }
+#tari_ootle_wallet_storage_sqlite = { git = "https://github.com/tari-project/tari-ootle.git", branch = "development" }
+#tari_template_lib_types = { git = "https://github.com/tari-project/tari-ootle.git", branch = "development" }
+#tari_ootle_common_types = { git = "https://github.com/tari-project/tari-ootle.git", branch = "development" }
+#tari_ootle_address = { git = "https://github.com/tari-project/tari-ootle.git", branch = "development" }
+#tari_engine_types = { git = "https://github.com/tari-project/tari-ootle.git", branch = "development" }
+
+tari_ootle_wallet_sdk = { path = "../dan/crates/wallet/sdk" }
+tari_ootle_wallet_sdk_services = { path = "../dan/crates/wallet/sdk_services", features = ["indexer_jrpc"] }
+tari_ootle_wallet_storage_sqlite = { path = "../dan/crates/wallet/storage_sqlite" }
+tari_template_lib_types = { path = "../dan/crates/template_lib_types" }
+tari_ootle_common_types = { path = "../dan/crates/common_types" }
+tari_ootle_address = { path = "../dan/crates/ootle_address" }
+tari_engine_types = { path = "../dan/crates/engine_types" }
+
+
+tari_crypto = { version = "0.22.1", features = ["std"] }
+
+anyhow = "1.0.100"
+env_logger = "0.11.8"
+futures = "0.3.31"
+clap = { version = "4.5.48", features = ["derive"] }
+tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
+url = "2.5.7"
+spinners = "4.1.1"
+termimad = "0.34.0"
+chacha20poly1305 = { version = "0.10.1", features = ["rand_core", "std"] }
+blake2 = "0.10.6"
+zeroize = "1.8.2"
+
+[[bin]]
+name = "ootle"
+path = "src/main.rs"
