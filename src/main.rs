@@ -242,15 +242,26 @@ async fn main() -> Result<(), anyhow::Error> {
             cli_println!();
 
             let mut table = Table::new();
-            table.set_titles(vec!["Resource", "Balance", "#UTXOs", "Type", "Vault"]);
+            table.set_titles(vec![
+                "Resource",
+                "Balance",
+                "Pvt Balance",
+                "#UTXOs",
+                "Type",
+                "Vault",
+            ]);
 
             for balance in balances {
-                let amount = balance.balance + balance.confidential_balance;
                 table.add_row(table_row![
                     balance
                         .token_symbol
                         .unwrap_or_else(|| balance.resource_address.to_string()),
-                    amount.to_decimal_string(balance.divisibility.into()),
+                    balance
+                        .balance
+                        .to_decimal_string(balance.divisibility.into()),
+                    balance
+                        .confidential_balance
+                        .to_decimal_string(balance.divisibility.into()),
                     balance.num_outputs,
                     balance.resource_type,
                     balance.vault_address.display(),
