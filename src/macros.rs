@@ -3,6 +3,9 @@
 
 #[macro_export]
 macro_rules! cli_println {
+    () => {{
+        println!();
+    }};
     ($text:literal) => {{
         cli_println!(White, $text);
     }};
@@ -11,6 +14,7 @@ macro_rules! cli_println {
     }};
     ($colour:ident, $text:literal, $($args:tt)*) => {{
         let mut skin = termimad::MadSkin::default();
+        #[allow(unused_imports)]
         use termimad::crossterm::style::Color::*;
         skin.bold.set_fg($colour);
         skin.print_inline(format!(concat!($text, "\n"), $($args)*).as_str());

@@ -4,9 +4,11 @@
 mod macros;
 mod models;
 mod spinner;
+mod table;
 mod wallet;
 
 use crate::spinner::spinner;
+use crate::table::Table;
 use crate::wallet::Wallet;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -14,15 +16,20 @@ use std::path::Path;
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_crypto::tari_utilities::hex::from_hex;
 use tari_crypto::tari_utilities::{ByteArray, SafePassword};
-use tari_engine_types::FromByteType;
+use tari_engine_types::template_lib_models::ResourceAddress;
 use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_common_types::Network;
 use tari_ootle_wallet_sdk::WalletSdk;
 use tari_ootle_wallet_sdk_services::indexer_jrpc::IndexerJsonRpcNetworkInterface;
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
+use termimad::crossterm::style::Color;
 use url::Url;
 use zeroize::Zeroizing;
+
+const ANSI_GREEN: Color = Color::AnsiValue(2);
+const ANSI_BLUE: Color = Color::AnsiValue(4);
+const ANSI_WHITE: Color = Color::AnsiValue(15);
 
 #[derive(Parser)]
 #[command(name = "ootle", about = "Ootle wallet CLI")]
@@ -68,6 +75,21 @@ enum Commands {
             short,
             long,
             help = "Optional account name to scan. If not provided, all accounts will be used"
+        )]
+        account_name: Option<Box<str>>,
+    },
+    AddResource {
+        #[arg(
+            short,
+            long,
+            alias = "address",
+            help = "The resource address in hex format"
+        )]
+        resource_address: ResourceAddress,
+        #[arg(
+            short = 'a',
+            long,
+            help = "Optional account name to add the resource to. If not provided, the default account will be used"
         )]
         account_name: Option<Box<str>>,
     },
@@ -126,38 +148,42 @@ async fn main() -> Result<(), anyhow::Error> {
                 spend_public_key,
             )?;
             cli_println!(
-                Green,
+                ANSI_GREEN,
                 "✔️ View-only account {} imported successfully",
                 spend_public_key
             );
         }
-        Commands::Scan { account_name } => {
-            // let wallet = Wallet::spawn(sdk);
-            // println!("Scanning blockchain...");
-            // let events = scan(
-            //     &password,
-            //     &base_url,
-            //     &database_file,
-            //     account_name.as_deref(),
-            //     max_blocks_to_scan,
-            //     batch_size,
-            // )
-            //     .await?;
-            // println!("Scan complete. Events: {}", events.len());
-            // Ok(())
-            // Add scanning logic here
-        }
-        Commands::Balance { account_name } => {
-            let wallet = wallet.into_spawned();
+        Commands::AddResource {
+            resource_address,
+            account_name,
+        } => {
+            let account = wallet.get_account_or_default(account_name.as_deref())?; // Validate account exists
 
-            let account = match account_name {
-                Some(name) => wallet.sdk().accounts_api().get_account_by_name(&name)?,
-                None => wallet.sdk().accounts_api().get_default()?,
-            };
+            wallet
+                .sdk()
+                .accounts_api()
+                .associate_stealth_resource(account.component_address(), resource_address)?;
+            cli_println!(
+                ANSI_GREEN,
+                "✔️ Resource {} added to account '{}'",
+                resource_address,
+                account.account().name.as_deref().unwrap_or("<unnamed>")
+            );
+        }
+        Commands::Scan { account_name } => {
+            let mut wallet = wallet.into_spawned();
+            // This is mainly to check that the user set a working URL
+            wallet
+                .check_indexer_connection()
+                .await
+                .context("indexer connection failed")?;
+            cli_println!(ANSI_GREEN, "✔️ Connected to indexer");
+
+            let account = wallet.get_account_or_default(account_name.as_deref())?; // Validate account exists
             let component_address = *account.component_address();
             spinner(
                 "Refreshing account... This may take a while.",
-                || wallet.refresh_account(component_address),
+                wallet.refresh_account(component_address),
                 |mut spinner, result| match result {
                     Ok(true) => {
                         spinner.stop_and_persist(
@@ -180,7 +206,27 @@ async fn main() -> Result<(), anyhow::Error> {
                 },
             )
             .await;
+            spinner(
+                "Waiting for scanning to complete... This may take a while.",
+                wallet.scan_for_utxos(account),
+                |mut spinner, _| {
+                    spinner.stop_and_persist("✔️", "Scanning - Done".to_string());
+                },
+            )
+            .await;
 
+            let events = wallet.drain_events();
+            cli_println!(ANSI_BLUE, "Events:");
+            for event in events {
+                cli_println!(ANSI_WHITE, "{:?}", event);
+            }
+            wallet.shutdown();
+        }
+        Commands::Balance { account_name } => {
+            let account = match account_name {
+                Some(name) => wallet.sdk().accounts_api().get_account_by_name(&name)?,
+                None => wallet.sdk().accounts_api().get_default()?,
+            };
             let balances = wallet.get_balances_for_account(account.component_address())?;
             cli_println!(
                 Blue,
@@ -188,26 +234,29 @@ async fn main() -> Result<(), anyhow::Error> {
                 account.account().name.as_deref().unwrap_or("<unnamed>")
             );
 
-            cli_println!(White, "-----------------------------------");
-            cli_println!(White, "Address: {}", account.address());
-            cli_println!(White, "Component: {}", account.component_address());
-            cli_println!(White, "Public Key: {}", account.owner_public_key());
-            cli_println!(White, "-----------------------------------");
+            cli_println!(ANSI_BLUE, "-----------------------------------");
+            cli_println!(ANSI_WHITE, "Address: {}", account.address());
+            cli_println!(ANSI_WHITE, "Component: {}", account.component_address());
+            cli_println!(ANSI_WHITE, "Public Key: {}", account.owner_public_key());
+            cli_println!(ANSI_BLUE, "-----------------------------------");
+            cli_println!();
 
-            cli_println!(White, "-----------------------------------");
-            cli_println!(White, "| Resource | Balance | Vault |");
-            cli_println!(White, "-----------------------------------");
+            let mut table = Table::new();
+            table.set_titles(vec!["Resource", "Balance", "#UTXOs", "Type", "Vault"]);
 
             for balance in balances {
-                cli_println!(
-                    White,
-                    "| {} | {}{} | {} |",
-                    balance.resource_address,
-                    balance.balance,
-                    balance.token_symbol.display(),
-                    balance.vault_address.display()
-                );
+                let amount = balance.balance + balance.confidential_balance;
+                table.add_row(table_row![
+                    balance
+                        .token_symbol
+                        .unwrap_or_else(|| balance.resource_address.to_string()),
+                    amount.to_decimal_string(balance.divisibility.into()),
+                    balance.num_outputs,
+                    balance.resource_type,
+                    balance.vault_address.display(),
+                ]);
             }
+            table.print_stdout();
         }
     }
 

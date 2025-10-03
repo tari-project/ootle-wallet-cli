@@ -1,10 +1,9 @@
 use spinners::Spinner;
 use termimad::{crossterm, MadSkin};
 
-pub async fn spinner<'a, T, F, R, TFut, FAfter, TAfter>(text: T, func: F, after: FAfter) -> TAfter
+pub async fn spinner<'a, T, R, TFut, FAfter, TAfter>(text: T, fut: TFut, after: FAfter) -> TAfter
 where
     T: AsRef<str>,
-    F: Fn() -> TFut + 'a,
     TFut: Future<Output = R> + 'a,
     FAfter: FnOnce(Spinner, R) -> TAfter + 'a,
 {
@@ -14,6 +13,6 @@ where
         spinners::Spinners::Dots,
         skin.inline(text.as_ref()).to_string(),
     );
-    let result = func().await;
+    let result = fut.await;
     after(loader, result)
 }

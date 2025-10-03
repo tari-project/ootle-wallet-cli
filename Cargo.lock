@@ -2417,15 +2417,13 @@ name = "ootle-wallet-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "blake2",
- "chacha20poly1305",
  "clap 4.5.48",
  "env_logger",
  "futures",
+ "log",
  "spinners",
  "tari_crypto",
  "tari_engine_types",
- "tari_ootle_address",
  "tari_ootle_common_types",
  "tari_ootle_wallet_sdk",
  "tari_ootle_wallet_sdk_services",

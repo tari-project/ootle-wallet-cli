@@ -7,6 +7,7 @@ pub struct BalanceEntry {
     pub resource_address: ResourceAddress,
     pub balance: Amount,
     pub resource_type: ResourceType,
+    pub num_outputs: usize,
     pub confidential_balance: Amount,
     pub token_symbol: Option<String>,
     pub divisibility: u8,
