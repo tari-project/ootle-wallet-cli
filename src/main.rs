@@ -122,7 +122,7 @@ async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
     let cli = Cli::parse();
 
-    let wallet = init_wallet(&cli.common).context("Failed to initialize wallet SDK")?;
+    let mut wallet = init_wallet(&cli.common).context("Failed to initialize wallet SDK")?;
 
     match cli.command {
         Commands::ShowInfo => {
@@ -171,7 +171,6 @@ async fn main() -> Result<(), anyhow::Error> {
             );
         }
         Commands::Scan { account_name } => {
-            let mut wallet = wallet.into_spawned();
             // This is mainly to check that the user set a working URL
             wallet
                 .check_indexer_connection()
@@ -217,10 +216,13 @@ async fn main() -> Result<(), anyhow::Error> {
 
             let events = wallet.drain_events();
             cli_println!(ANSI_BLUE, "Events:");
-            for event in events {
-                cli_println!(ANSI_WHITE, "{:?}", event);
+            if events.is_empty() {
+                cli_println!(ANSI_WHITE, "No events");
+            } else {
+                for event in events {
+                    cli_println!(ANSI_WHITE, "   - {:?}", event);
+                }
             }
-            wallet.shutdown();
         }
         Commands::Balance { account_name } => {
             let account = match account_name {

@@ -4,42 +4,39 @@
 use crate::models::BalanceEntry;
 use anyhow::anyhow;
 use anyhow::Context;
-use futures::future;
 use std::collections::{HashMap, HashSet};
-use std::pin::Pin;
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_engine_types::template_lib_models::ComponentAddress;
 use tari_ootle_common_types::Network;
 use tari_ootle_wallet_sdk::models::{AccountWithAddress, KeyType};
 use tari_ootle_wallet_sdk::network::WalletNetworkInterface;
 use tari_ootle_wallet_sdk::WalletSdk;
-use tari_ootle_wallet_sdk_services::account_monitor::{AccountMonitor, AccountMonitorHandle};
+use tari_ootle_wallet_sdk_services::account_monitor::AccountScanner;
+use tari_ootle_wallet_sdk_services::events::WalletEvent;
 use tari_ootle_wallet_sdk_services::indexer_jrpc::IndexerJsonRpcNetworkInterface;
 use tari_ootle_wallet_sdk_services::notify::Notify;
-use tari_ootle_wallet_sdk_services::utxo_scanner::{
-    StealthUtxoScannerWorker, UtxoRecovery, UtxoRecoveryEvent, UtxoScanner, UtxoScannerHandle,
-};
-use tari_ootle_wallet_sdk_services::Shutdown;
+use tari_ootle_wallet_sdk_services::utxo_scanner::{UtxoRecovery, UtxoScanner};
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 use tari_template_lib_types::{Amount, ResourceType};
-use tokio::sync::{broadcast, watch};
-use tokio::task::JoinHandle;
+use tokio::sync::broadcast;
 
 pub type Sdk = WalletSdk<SqliteWalletStore, IndexerJsonRpcNetworkInterface>;
 
 pub struct Wallet {
     sdk: Sdk,
+    wallet_event_notifier: Notify<WalletEvent>,
+    wallet_events_rx: broadcast::Receiver<WalletEvent>,
 }
 
 impl Wallet {
     pub fn new(sdk: Sdk) -> Self {
-        Self { sdk }
-    }
-
-    pub fn into_spawned(self) -> SpawnedWallet {
-        SpawnedWallet {
-            services: spawn_services(self),
+        let notify = Notify::new(100);
+        Self {
+            sdk,
+            // Subscribe early to avoid missing events
+            wallet_events_rx: notify.subscribe(),
+            wallet_event_notifier: notify,
         }
     }
 
@@ -99,24 +96,24 @@ impl Wallet {
         let mut balances = Vec::with_capacity(vaults.len());
         let mut vaulted_resources = HashSet::new();
         for vault in vaults {
-            let confidential_balance = if vault.resource_type.is_stealth() {
-                let stealth_balance = stealth_outputs
+            let (utxo_count, confidential_balance) = if vault.resource_type.is_stealth() {
+                let (utxo_count, stealth_balance) = stealth_outputs
                     .iter()
                     .filter(|o| {
                         o.owner_account == *account_address
                             && o.resource_address == vault.resource_address
                     })
                     .map(|o| o.value)
-                    .sum::<Amount>();
+                    .fold((0usize, Amount::zero()), |(cnt, acc), o| (cnt + 1, acc + o));
 
                 if stealth_balance.is_positive() {
-                    // If the vault has a confidential balance, we don't want to add it to the balances list
-                    // as it is already included in the vault's revealed balance.
+                    // If the vault exists, we add the confidential balance to this entry and, we don't want to add it again to the balances list for stealth utxos below.
                     vaulted_resources.insert(vault.resource_address);
                 }
-                stealth_balance
+
+                (utxo_count, stealth_balance)
             } else {
-                vault.confidential_balance
+                (0, vault.confidential_balance)
             };
 
             balances.push(BalanceEntry {
@@ -125,7 +122,7 @@ impl Wallet {
                 balance: vault.revealed_balance,
                 resource_type: vault.resource_type,
                 confidential_balance,
-                num_outputs: 0,
+                num_outputs: utxo_count,
                 token_symbol: vault.token_symbol,
                 divisibility: vault.divisibility,
             })
@@ -175,129 +172,49 @@ impl Wallet {
             .await
             .map_err(|e| anyhow!("Failed to connect to indexer: {}", e))
     }
-}
-
-pub struct SpawnedWallet {
-    services: Services,
-}
-
-impl SpawnedWallet {
-    pub fn sdk(&self) -> &Sdk {
-        self.services.wallet.sdk()
-    }
-
-    pub async fn check_indexer_connection(&self) -> anyhow::Result<()> {
-        self.services.wallet.check_indexer_connection().await
-    }
-
-    pub fn get_account_or_default(&self, name: Option<&str>) -> anyhow::Result<AccountWithAddress> {
-        self.services.wallet.get_account_or_default(name)
-    }
 
     pub async fn refresh_account(&self, account_address: ComponentAddress) -> anyhow::Result<bool> {
-        let updated = self
-            .services
-            .account_monitor
+        let updated = AccountScanner::new(self.wallet_event_notifier.clone(), self.sdk().clone())
             .refresh_account(account_address)
-            .await?;
+            .await
+            .map_err(|e| anyhow!("Failed to refresh account: {}", e))?;
         Ok(updated)
     }
 
     pub async fn scan_for_utxos(&self, account: AccountWithAddress) -> anyhow::Result<()> {
-        let scanner = UtxoScanner::new(self.sdk().clone());
+        let scanner = UtxoScanner::new(self.sdk().clone(), self.wallet_event_notifier.clone());
         let resources = self
             .sdk()
             .accounts_api()
             .get_associated_stealth_resources(account.component_address())?;
-        let (notify_tx, mut notify_rx) = watch::channel(());
-        notify_rx.mark_unchanged();
+        let mut num_found_total = 0;
         for resource in resources {
-            let num_found = scanner
-                .scan_and_enqueue_utxos(&account, &resource, &notify_tx)
-                .await?;
-            if num_found > 0 {
+            let stats = scanner.scan_and_enqueue_utxos(&account, &resource).await?;
+            if stats.num_recovered > 0 {
                 log::info!(
                     "Found {} new stealth UTXOs for account {} resource {}",
-                    num_found,
+                    stats.num_recovered,
                     account,
                     resource
                 );
             }
+            num_found_total += stats.num_recovered;
         }
-        if notify_rx.has_changed()? {
+
+        if num_found_total > 0 {
             UtxoRecovery::new(self.sdk().clone())
+                .with_notify(self.wallet_event_notifier.clone())
                 .process_utxo_validation_queue()
                 .await?;
         }
         Ok(())
     }
 
-    pub fn drain_events(&mut self) -> Vec<UtxoRecoveryEvent> {
+    pub fn drain_events(&mut self) -> Vec<WalletEvent> {
         let mut events = vec![];
-        while let Ok(event) = self.services.recovery_events.try_recv() {
+        while let Ok(event) = self.wallet_events_rx.try_recv() {
             events.push(event);
         }
         events
     }
-
-    pub fn shutdown(mut self) -> Wallet {
-        self.services._shutdown.trigger();
-        self.services.wallet
-    }
-}
-
-fn spawn_services(wallet: Wallet) -> Services {
-    let sdk = wallet.sdk();
-    let notify = Notify::new(100);
-    let shutdown = Shutdown::new();
-
-    let utxo_scanner = StealthUtxoScannerWorker::new(sdk.clone());
-    let (utxo_scanner_join_handle, utxo_scanner_handle) = utxo_scanner.spawn();
-
-    let notify_sub = utxo_scanner_handle.subscribe_notifications();
-    let (tx, recovery_events) = broadcast::channel(100);
-    let utxo_recovery_join_handle = tokio::spawn(
-        UtxoRecovery::new(sdk.clone())
-            .with_events(tx)
-            .run(notify_sub),
-    );
-
-    let (account_monitor, account_monitor_handle) = AccountMonitor::new(
-        notify,
-        sdk.clone(),
-        utxo_scanner_handle.clone(),
-        shutdown.to_signal(),
-    );
-    let account_monitor_join_handle =
-        tokio::spawn(account_monitor.disable_periodic_scanning_with_utxos().run());
-
-    Services {
-        _shutdown: shutdown,
-        wallet,
-        recovery_events,
-        _utxo_scanner: utxo_scanner_handle,
-        account_monitor: account_monitor_handle,
-        _services_fut: Box::pin(try_select_any([
-            account_monitor_join_handle,
-            utxo_scanner_join_handle,
-            utxo_recovery_join_handle,
-        ])),
-    }
-}
-
-struct Services {
-    pub _shutdown: Shutdown,
-    pub recovery_events: broadcast::Receiver<UtxoRecoveryEvent>,
-    pub _services_fut: Pin<Box<dyn Future<Output = Result<(), anyhow::Error>>>>,
-    pub _utxo_scanner: UtxoScannerHandle,
-    pub account_monitor: AccountMonitorHandle,
-    pub wallet: Wallet,
-}
-
-async fn try_select_any<I>(handles: I) -> Result<(), anyhow::Error>
-where
-    I: IntoIterator<Item = JoinHandle<Result<(), anyhow::Error>>>,
-{
-    let (res, _, _) = future::select_all(handles).await;
-    res.unwrap_or_else(|e| Err(anyhow!("Task panicked: {}", e)))
 }
