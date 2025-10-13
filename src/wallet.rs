@@ -13,7 +13,7 @@ use tari_ootle_wallet_sdk::network::WalletNetworkInterface;
 use tari_ootle_wallet_sdk::WalletSdk;
 use tari_ootle_wallet_sdk_services::account_monitor::AccountScanner;
 use tari_ootle_wallet_sdk_services::events::WalletEvent;
-use tari_ootle_wallet_sdk_services::indexer_jrpc::IndexerJsonRpcNetworkInterface;
+use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
 use tari_ootle_wallet_sdk_services::notify::Notify;
 use tari_ootle_wallet_sdk_services::utxo_scanner::{UtxoRecovery, UtxoScanner};
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
@@ -21,7 +21,7 @@ use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 use tari_template_lib_types::{Amount, ResourceType};
 use tokio::sync::broadcast;
 
-pub type Sdk = WalletSdk<SqliteWalletStore, IndexerJsonRpcNetworkInterface>;
+pub type Sdk = WalletSdk<SqliteWalletStore, IndexerRestApiNetworkInterface>;
 
 pub struct Wallet {
     sdk: Sdk,
@@ -190,15 +190,15 @@ impl Wallet {
         let mut num_found_total = 0;
         for resource in resources {
             let stats = scanner.scan_and_enqueue_utxos(&account, &resource).await?;
-            if stats.num_recovered > 0 {
+            if stats.num_potential_recoveries > 0 {
                 log::info!(
-                    "Found {} new stealth UTXOs for account {} resource {}",
-                    stats.num_recovered,
+                    "Found {} potential stealth UTXOs for account {} resource {}",
+                    stats.num_potential_recoveries,
                     account,
                     resource
                 );
             }
-            num_found_total += stats.num_recovered;
+            num_found_total += stats.num_potential_recoveries;
         }
 
         if num_found_total > 0 {

@@ -20,7 +20,7 @@ use tari_engine_types::template_lib_models::ResourceAddress;
 use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_common_types::Network;
 use tari_ootle_wallet_sdk::WalletSdk;
-use tari_ootle_wallet_sdk_services::indexer_jrpc::IndexerJsonRpcNetworkInterface;
+use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 use termimad::crossterm::style::Color;
@@ -279,7 +279,7 @@ async fn main() -> Result<(), anyhow::Error> {
 fn init_wallet(common: &CommonArgs) -> anyhow::Result<Wallet> {
     let store = SqliteWalletStore::try_open(&common.database_file)?;
     store.run_migrations()?;
-    let indexer = IndexerJsonRpcNetworkInterface::new(common.indexer_url.clone());
+    let indexer = IndexerRestApiNetworkInterface::new(common.indexer_url.clone());
     let config = tari_ootle_wallet_sdk::WalletSdkConfig {
         network: common.network,
         override_keyring_password: Some(common.password.clone()),
