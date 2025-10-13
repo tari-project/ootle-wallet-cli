@@ -5,11 +5,13 @@ mod macros;
 mod models;
 mod spinner;
 mod table;
+mod transfer;
 mod wallet;
 
 use crate::spinner::spinner;
 use crate::table::Table;
-use crate::wallet::Wallet;
+use crate::transfer::{handle_transfer_command, TransferCommand};
+use crate::wallet::{BalanceStuff, Sdk, Wallet};
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::path::Path;
@@ -19,7 +21,6 @@ use tari_crypto::tari_utilities::{ByteArray, SafePassword};
 use tari_engine_types::template_lib_models::ResourceAddress;
 use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_common_types::Network;
-use tari_ootle_wallet_sdk::WalletSdk;
 use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
@@ -37,7 +38,7 @@ struct Cli {
     #[command(flatten)]
     common: CommonArgs,
     #[command(subcommand)]
-    command: Commands,
+    command: Command,
 }
 
 #[derive(Parser)]
@@ -68,7 +69,7 @@ struct CommonArgs {
 }
 
 #[derive(Subcommand)]
-enum Commands {
+enum Command {
     /// Scan the blockchain for transactions
     Scan {
         #[arg(
@@ -114,6 +115,28 @@ enum Commands {
         )]
         spend_public_key: RistrettoPublicKeyBytes,
     },
+    CreateAccount {
+        #[arg(short, long, help = "Name of the new account")]
+        name: String,
+        #[arg(
+            short = 's',
+            long,
+            default_value_t = true,
+            help = "Set the new account as active"
+        )]
+        set_active: bool,
+        #[arg(
+            short = 'o',
+            long,
+            help = "Output file to save the account details as JSON"
+        )]
+        output_path: Option<Box<Path>>,
+    },
+    #[clap(subcommand)]
+    Transfer(TransferCommand),
+    /// Create new seed words
+    CreateSeedWords,
+    /// Show wallet info
     ShowInfo,
 }
 
@@ -125,7 +148,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut wallet = init_wallet(&cli.common).context("Failed to initialize wallet SDK")?;
 
     match cli.command {
-        Commands::ShowInfo => {
+        Command::ShowInfo => {
             cli_println!("Ootle Wallet CLI");
             cli_println!("================");
             cli_println!(White, "Network: {}", wallet.network());
@@ -133,7 +156,7 @@ async fn main() -> Result<(), anyhow::Error> {
             cli_println!(White, "Indexer URL: {}", cli.common.indexer_url);
             cli_println!("================");
         }
-        Commands::ImportViewKey {
+        Command::ImportViewKey {
             view_private_key,
             spend_public_key,
         } => {
@@ -153,7 +176,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 spend_public_key
             );
         }
-        Commands::AddResource {
+        Command::AddResource {
             resource_address,
             account_name,
         } => {
@@ -170,7 +193,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 account.account().name.as_deref().unwrap_or("<unnamed>")
             );
         }
-        Commands::Scan { account_name } => {
+        Command::Scan { account_name } => {
             // This is mainly to check that the user set a working URL
             wallet
                 .check_indexer_connection()
@@ -181,18 +204,26 @@ async fn main() -> Result<(), anyhow::Error> {
             let account = wallet.get_account_or_default(account_name.as_deref())?; // Validate account exists
             let component_address = *account.component_address();
             spinner(
-                "Refreshing account... This may take a while.",
+                format!(
+                    "Refreshing account {}... This may take a while.",
+                    component_address
+                ),
                 wallet.refresh_account(component_address),
                 |mut spinner, result| match result {
                     Ok(true) => {
                         spinner.stop_and_persist(
                             "✔️",
-                            "Account refreshed and found balance updates".to_string(),
+                            format!(
+                                "Account {} refreshed and found balance updates",
+                                component_address
+                            ),
                         );
                     }
                     Ok(false) => {
-                        spinner
-                            .stop_and_persist("✔️", "Account refreshed. No changes.".to_string());
+                        spinner.stop_and_persist(
+                            "✔️",
+                            format!("Account {} refreshed. No changes.", component_address),
+                        );
                     }
                     Err(err) => {
                         spinner.stop_and_persist(
@@ -208,8 +239,13 @@ async fn main() -> Result<(), anyhow::Error> {
             spinner(
                 "Waiting for scanning to complete... This may take a while.",
                 wallet.scan_for_utxos(account),
-                |mut spinner, _| {
-                    spinner.stop_and_persist("✔️", "Scanning - Done".to_string());
+                |mut spinner, res| match res {
+                    Ok(_) => {
+                        spinner.stop_and_persist("✔️", "UTXO Scanning - Done".to_string());
+                    }
+                    Err(err) => {
+                        spinner.stop_and_persist("❌", format!("UTXO Scanning failed: {err}"));
+                    }
                 },
             )
             .await;
@@ -224,12 +260,13 @@ async fn main() -> Result<(), anyhow::Error> {
                 }
             }
         }
-        Commands::Balance { account_name } => {
+        Command::Balance { account_name } => {
             let account = match account_name {
                 Some(name) => wallet.sdk().accounts_api().get_account_by_name(&name)?,
                 None => wallet.sdk().accounts_api().get_default()?,
             };
-            let balances = wallet.get_balances_for_account(account.component_address())?;
+            let BalanceStuff { balances, memos } =
+                wallet.get_balances_for_account(account.component_address())?;
             cli_println!(
                 Blue,
                 "Balances for account '{}':",
@@ -270,9 +307,67 @@ async fn main() -> Result<(), anyhow::Error> {
                 ]);
             }
             table.print_stdout();
+
+            if !memos.is_empty() {
+                cli_println!();
+                cli_println!(ANSI_BLUE, "Memos:");
+                let mut table = Table::new();
+                table.set_titles(vec!["Utxo", "Message"]);
+
+                for (commitment, memo) in memos {
+                    let Some(message) = memo.as_message() else {
+                        continue;
+                    };
+                    table.add_row(table_row![commitment, message]);
+                }
+                table.print_stdout();
+            }
+        }
+        Command::CreateSeedWords => {
+            let seed_words = wallet.create_seed_words()?;
+            cli_println!(ANSI_GREEN, "✔️ Seed words created successfully");
+            cli_println!(ANSI_WHITE, "{}", seed_words.join(" ").reveal());
+        }
+        Command::CreateAccount {
+            name,
+            set_active,
+            output_path,
+        } => {
+            let account = wallet.create_account(&name, set_active)?;
+            cli_println!(ANSI_GREEN, "✔️ Account '{}' created successfully", name);
+            let json = serde_json::json!({
+                "component_address": account.component_address(),
+                "address": account.address(),
+                "account_public_key": account.owner_public_key(),
+                "key_index": account.owner_key_id(),
+                "name": name,
+            });
+            cli_println!(ANSI_WHITE, "{:#}", json);
+            if let Some(path) = output_path {
+                write_to_json_file(&json, path.as_ref())
+                    .context("failed to write account details to file")?;
+                cli_println!(ANSI_WHITE, "Account details written to {}", path.display());
+            }
+        }
+        Command::Transfer(command) => {
+            handle_transfer_command(&mut wallet, command).await?;
         }
     }
 
+    Ok(())
+}
+
+fn write_to_json_file<T: serde::Serialize, P: AsRef<Path>>(
+    data: &T,
+    path: P,
+) -> anyhow::Result<()> {
+    let mut file = std::fs::File::options()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .context("failed to open file for writing")?;
+    serde_json::to_writer_pretty(&mut file, data).context("failed to encode data to file")?;
     Ok(())
 }
 
@@ -285,6 +380,12 @@ fn init_wallet(common: &CommonArgs) -> anyhow::Result<Wallet> {
         override_keyring_password: Some(common.password.clone()),
     };
 
-    let sdk = WalletSdk::initialize(store, indexer, config)?;
+    let mut sdk = Sdk::initialize(store, indexer, config)?;
+    // Load seed words if present. If we don't do this then the wallet will be in read-only mode
+    if sdk.load_seed_words()?.is_some() {
+        cli_println!(ANSI_BLUE, "✔️ Wallet is in read/write mode");
+    } else {
+        cli_println!(ANSI_GREEN, "✔️ Wallet is in read-only mode");
+    }
     Ok(Wallet::new(sdk))
 }

@@ -4,21 +4,35 @@
 use crate::models::BalanceEntry;
 use anyhow::anyhow;
 use anyhow::Context;
+use rand::rngs::OsRng;
 use std::collections::{HashMap, HashSet};
+use tari_crypto::keys::SecretKey;
 use tari_crypto::ristretto::RistrettoSecretKey;
-use tari_engine_types::template_lib_models::ComponentAddress;
-use tari_ootle_common_types::Network;
-use tari_ootle_wallet_sdk::models::{AccountWithAddress, KeyType};
+use tari_engine_types::template_lib_models::{
+    ComponentAddress, ResourceAddress, StealthTransferStatement, UtxoAddress,
+};
+use tari_engine_types::FromByteType;
+use tari_ootle_common_types::displayable::Displayable;
+use tari_ootle_common_types::{Network, SubstateRequirement};
+use tari_ootle_wallet_sdk::apis::stealth_outputs::TransferStatementParams;
+use tari_ootle_wallet_sdk::apis::stealth_transfer::OutputToCreate;
+use tari_ootle_wallet_sdk::cipher_seed::CipherSeedRestore;
+use tari_ootle_wallet_sdk::constants::XTR;
+use tari_ootle_wallet_sdk::crypto::memo::Memo;
+use tari_ootle_wallet_sdk::models::{
+    AccountWithAddress, KeyType, TransactionStatus, WalletLockId, WalletTransaction,
+};
 use tari_ootle_wallet_sdk::network::WalletNetworkInterface;
-use tari_ootle_wallet_sdk::WalletSdk;
+use tari_ootle_wallet_sdk::{OotleAddress, SeedWords, WalletSdk};
 use tari_ootle_wallet_sdk_services::account_monitor::AccountScanner;
 use tari_ootle_wallet_sdk_services::events::WalletEvent;
 use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
 use tari_ootle_wallet_sdk_services::notify::Notify;
 use tari_ootle_wallet_sdk_services::utxo_scanner::{UtxoRecovery, UtxoScanner};
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
-use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
+use tari_template_lib_types::crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes};
 use tari_template_lib_types::{Amount, ResourceType};
+use tari_transaction::{Transaction, UnsignedTransaction};
 use tokio::sync::broadcast;
 
 pub type Sdk = WalletSdk<SqliteWalletStore, IndexerRestApiNetworkInterface>;
@@ -86,7 +100,7 @@ impl Wallet {
     pub fn get_balances_for_account(
         &self,
         account_address: &ComponentAddress,
-    ) -> anyhow::Result<Vec<BalanceEntry>> {
+    ) -> anyhow::Result<BalanceStuff> {
         let sdk = self.sdk();
         let vaults = sdk.accounts_api().get_vaults_by_account(account_address)?;
         let stealth_outputs = sdk
@@ -128,6 +142,11 @@ impl Wallet {
             })
         }
 
+        let memos = stealth_outputs
+            .iter()
+            .filter_map(|o| Some((o.commitment, o.memo.as_ref()?.clone())))
+            .collect::<Vec<_>>();
+
         let stealth_outputs = stealth_outputs
             .into_iter()
             .filter(|o| !vaulted_resources.contains(&o.resource_address))
@@ -162,7 +181,7 @@ impl Wallet {
             });
         }
 
-        Ok(balances)
+        Ok(BalanceStuff { balances, memos })
     }
 
     pub async fn check_indexer_connection(&self) -> anyhow::Result<()> {
@@ -188,14 +207,26 @@ impl Wallet {
             .accounts_api()
             .get_associated_stealth_resources(account.component_address())?;
         let mut num_found_total = 0;
-        for resource in resources {
-            let stats = scanner.scan_and_enqueue_utxos(&account, &resource).await?;
+        for resource_addr in resources {
+            // Ensure that the resource is in the local database
+            let resource = self
+                .sdk
+                .substate_api()
+                .fetch_resource(resource_addr)
+                .await?;
+            self.sdk
+                .resources_api()
+                .upsert_resource(&resource_addr, &resource)?;
+
+            let stats = scanner
+                .scan_and_enqueue_utxos(&account, &resource_addr)
+                .await?;
             if stats.num_potential_recoveries > 0 {
                 log::info!(
                     "Found {} potential stealth UTXOs for account {} resource {}",
                     stats.num_potential_recoveries,
                     account,
-                    resource
+                    resource_addr
                 );
             }
             num_found_total += stats.num_potential_recoveries;
@@ -217,4 +248,194 @@ impl Wallet {
         }
         events
     }
+
+    pub fn create_seed_words(&mut self) -> anyhow::Result<SeedWords> {
+        self.sdk
+            .initialize_cipher_seed(CipherSeedRestore::CreateNewIfRequired)?;
+        let seed_words = self
+            .sdk
+            .load_seed_words()?
+            .expect("Bug: seed words were initialized however load_seed_words returned None");
+        Ok(seed_words)
+    }
+
+    pub fn create_account(
+        &mut self,
+        name: &str,
+        set_default: bool,
+    ) -> anyhow::Result<AccountWithAddress> {
+        self.sdk
+            .initialize_cipher_seed(CipherSeedRestore::CreateNewIfRequired)?;
+        let address = self.sdk.key_manager_api().next_account_address()?;
+        let account = self
+            .sdk
+            .accounts_api()
+            .create_account(Some(name), set_default, address)?;
+        Ok(account)
+    }
+
+    pub fn create_transfer(
+        &self,
+        src_account: Option<&str>,
+        dest_address: &OotleAddress,
+        fee_amount: u64,
+        amount: u64,
+        message: Option<&str>,
+    ) -> anyhow::Result<TransferOutput> {
+        let src_account = match src_account {
+            Some(name) => self.sdk().accounts_api().get_account_by_name(name).unwrap(),
+            None => self.sdk().accounts_api().get_default().unwrap(),
+        };
+        let spend_key_id = src_account.owner_key_id().ok_or_else(|| {
+            anyhow::anyhow!("Source account does not have the required spend key")
+        })?;
+        let view_key_id = src_account.view_only_key_id();
+
+        let outputs_api = self.sdk().stealth_outputs_api();
+
+        let lock_id = outputs_api.create_lock()?;
+        let (inputs, total_locked_amount) = outputs_api.lock_outputs_for_at_least_amount(
+            src_account.component_address(),
+            &XTR,
+            lock_id,
+            amount + fee_amount,
+        )?;
+
+        let dest_address = dest_address.try_from_byte_type().map_err(|err| {
+            anyhow!("Destination address is not a Ristretto Ootle address: {err}")
+        })?;
+
+        let inputs = inputs
+            .into_iter()
+            .map(|o| o.into_spend_data())
+            .collect::<Vec<_>>();
+        let memo = message
+            .map(|s| {
+                Memo::new_message(s).ok_or_else(|| {
+                    anyhow::anyhow!("Failed to create memo from message. Message too long?")
+                })
+            })
+            .transpose()?;
+        let src_address = src_account.address.try_from_byte_type()?;
+
+        let change_output = Some(OutputToCreate {
+            owner_address: &src_address,
+            amount: total_locked_amount - Amount::from(amount) - Amount::from(fee_amount),
+            memo: None,
+        })
+        .filter(|o| o.amount.is_positive());
+
+        let transfer_amount = OutputToCreate {
+            owner_address: &dest_address,
+            amount: amount.into(),
+            memo: memo.as_ref(),
+        };
+
+        let params = TransferStatementParams {
+            spend_key_id,
+            view_only_key_id: view_key_id,
+            resource_address: &XTR,
+            resource_view_key: None,
+            inputs: &inputs,
+            input_revealed_amount: Amount::zero(),
+            outputs: Some(transfer_amount).into_iter().chain(change_output),
+            // TODO: this only works with XTR
+            output_revealed_amount: fee_amount.into(),
+        };
+
+        let transfer = outputs_api.generate_transfer_statement(params)?;
+
+        Ok(TransferOutput {
+            statement: transfer,
+            resource_address: XTR,
+            lock_id,
+        })
+    }
+
+    pub fn sign_transaction(&self, transaction: UnsignedTransaction) -> Transaction {
+        let nonce = RistrettoSecretKey::random(&mut OsRng);
+        transaction
+            .authorized_sealed_signer()
+            .build(vec![])
+            .seal(&nonce)
+    }
+
+    pub fn create_transfer_transaction(&self, transfer: &TransferOutput) -> UnsignedTransaction {
+        let inputs = transfer
+            .statement
+            .inputs_statement
+            .inputs
+            .iter()
+            .map(|i| UtxoAddress::new(transfer.resource_address, i.commitment.into()))
+            .map(SubstateRequirement::unversioned);
+
+        Transaction::builder()
+            .for_network(self.network().as_byte())
+            .with_fee_instructions_builder(|builder| {
+                builder.pay_fee_stealth(transfer.statement.clone())
+            })
+            .with_inputs(inputs)
+            .add_input(XTR)
+            .build_unsigned_transaction()
+    }
+
+    pub async fn submit_transaction(
+        &self,
+        lock_id: WalletLockId,
+        transaction: Transaction,
+    ) -> anyhow::Result<WalletTransaction> {
+        let id = self
+            .sdk
+            .transaction_api()
+            .insert_new_transaction(transaction, None, false)?;
+        self.sdk
+            .stealth_outputs_api()
+            .locks_set_transaction_id(lock_id, id)?;
+        if !self.sdk.transaction_api().submit_transaction(id).await? {
+            return Err(anyhow!("Failed to submit transaction {}", id));
+        }
+
+        loop {
+            let maybe_tx = self
+                .sdk()
+                .transaction_api()
+                .check_and_store_finalized_transaction(id)
+                .await?;
+            match maybe_tx {
+                Some(tx) => {
+                    if matches!(tx.status, TransactionStatus::Accepted) {
+                        log::info!("Transaction {} was accepted", id);
+                        return Ok(tx);
+                    } else {
+                        return Err(anyhow!(
+                            "Transaction {} failed: {:?} {} {}",
+                            id,
+                            tx.status,
+                            tx.invalid_reason.as_deref().unwrap_or(""),
+                            tx.finalize
+                                .as_ref()
+                                .and_then(|f| f.result.any_reject())
+                                .display()
+                        ));
+                    }
+                }
+                None => {
+                    log::info!("Transaction {} is still pending...", id);
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct TransferOutput {
+    pub statement: StealthTransferStatement,
+    pub lock_id: WalletLockId,
+    pub resource_address: ResourceAddress,
+}
+
+pub struct BalanceStuff {
+    pub balances: Vec<BalanceEntry>,
+    pub memos: Vec<(PedersenCommitmentBytes, Memo)>,
 }
