@@ -9,7 +9,7 @@ set -e
 
 
 # Example usage of the transfer commands in the CLI tool.
-ADDRESS=xtr_loc_1j26ht0mvv5tmxd7d40s5vc2g8axva5stndm254xnrhp7dl3fvcsackujppl6sjzvn5q5mxjkmy675c8yvnzzuucp78dj4szdwu9mgtgv5aura
+ADDRESS=xtr_loc_12fp277020vd2cs70fjdwdfhfygzqxejrppdagvkm4jx4thjltflwqnljqh9w22dp3dat7jn6lnq29jzd99mlh47ydxl9p99hvxjj23q7alvpt
 AMOUNT=10000000
 
 cargo run --release -- --network=localnet --password=123 -ihttp://localhost:12017  \

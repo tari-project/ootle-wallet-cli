@@ -3649,7 +3649,7 @@ dependencies = [
 
 [[package]]
 name = "tari_consensus_types"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "borsh",
  "serde",
@@ -3687,7 +3687,7 @@ dependencies = [
 
 [[package]]
 name = "tari_engine_types"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "base64 0.21.7",
  "blake2",
@@ -3728,7 +3728,7 @@ dependencies = [
 
 [[package]]
 name = "tari_indexer_client"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "bounded-vec",
@@ -3794,7 +3794,7 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_address"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "bech32",
  "serde",
@@ -3807,7 +3807,7 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_common_types"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "blake2",
  "borsh",
@@ -3833,7 +3833,7 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_storage"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "bitflags 2.9.4",
@@ -3857,7 +3857,7 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_wallet_crypto"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "argon2 0.5.3",
  "blake2",
@@ -3879,7 +3879,7 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_wallet_sdk"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "blake2",
@@ -3910,7 +3910,7 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_wallet_sdk_services"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -3935,7 +3935,7 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_wallet_storage_sqlite"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "bigdecimal",
  "diesel",
@@ -4016,7 +4016,7 @@ dependencies = [
 
 [[package]]
 name = "tari_state_tree"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "log",
  "serde",
@@ -4038,7 +4038,7 @@ dependencies = [
 
 [[package]]
 name = "tari_template_builtin"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "tari_template_lib",
 ]
@@ -4079,7 +4079,7 @@ dependencies = [
 
 [[package]]
 name = "tari_transaction"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "borsh",
  "hex",

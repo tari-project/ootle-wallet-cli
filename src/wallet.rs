@@ -20,7 +20,7 @@ use tari_ootle_wallet_sdk::cipher_seed::CipherSeedRestore;
 use tari_ootle_wallet_sdk::constants::XTR;
 use tari_ootle_wallet_sdk::crypto::memo::Memo;
 use tari_ootle_wallet_sdk::models::{
-    AccountWithAddress, KeyType, TransactionStatus, WalletLockId, WalletTransaction,
+    AccountWithAddress, KeyBranch, KeyType, TransactionStatus, WalletLockId, WalletTransaction,
 };
 use tari_ootle_wallet_sdk::network::WalletNetworkInterface;
 use tari_ootle_wallet_sdk::{OotleAddress, SeedWords, WalletSdk};
@@ -332,6 +332,7 @@ impl Wallet {
         };
 
         let params = TransferStatementParams {
+            spend_key_branch: KeyBranch::Account,
             spend_key_id,
             view_only_key_id: view_key_id,
             resource_address: &XTR,
