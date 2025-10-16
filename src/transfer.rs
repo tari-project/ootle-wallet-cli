@@ -4,7 +4,7 @@ use crate::{cli_println, write_to_json_file, ANSI_GREEN, ANSI_WHITE};
 use anyhow::Context;
 use clap::Subcommand;
 use std::path::Path;
-use tari_ootle_wallet_sdk::models::WalletLockId;
+use tari_ootle_wallet_sdk::models::{KeyBranch, KeyId, WalletLockId};
 use tari_ootle_wallet_sdk::OotleAddress;
 use tari_transaction::{Transaction, UnsignedTransaction};
 
@@ -15,8 +15,15 @@ pub enum TransferCommand {
         from_account: Option<Box<str>>,
         #[arg(short = 't', long, help = "The destination address")]
         to_address: OotleAddress,
-        #[arg(short, long, help = "The amount to transfer")]
+        #[arg(short = 'a', long, help = "The amount to transfer")]
         amount: u64,
+        #[arg(
+            short = 'n',
+            long,
+            default_value_t = 1,
+            help = "The number of outputs. MAX 7 (8 including change output)"
+        )]
+        num_outputs: u8,
         #[arg(
             short = 'f',
             long,
@@ -70,14 +77,29 @@ pub async fn handle_transfer_command(
             to_address,
             fee_amount,
             amount,
+            num_outputs,
             message,
             output_file,
         } => {
+            let num_outputs = num_outputs.min(7);
+            let per_output = amount / num_outputs as u64;
+            let mut remainder = amount % num_outputs as u64;
+            let outputs = (0..num_outputs)
+                .map(|_| {
+                    let mut this_output = per_output;
+                    if remainder > 0 {
+                        this_output += 1;
+                        remainder -= 1;
+                    }
+                    this_output
+                })
+                .collect::<Vec<_>>();
             let transfer = wallet.create_transfer(
                 from_account.as_deref(),
                 &to_address,
                 fee_amount,
                 amount,
+                &outputs,
                 message.as_deref(),
             )?;
 
@@ -107,6 +129,8 @@ pub async fn handle_transfer_command(
                 &UnsignedTransactionOutput {
                     transaction,
                     lock_id: transfer.lock_id,
+                    required_signer_key_branch: transfer.required_signer_key_branch,
+                    required_signer_key_id: transfer.required_signer_key_id,
                 },
                 &output_file,
             )?;
@@ -125,7 +149,11 @@ pub async fn handle_transfer_command(
                     .context("failed to open transaction file")?,
             )
             .context("failed to parse transaction file")?;
-            let signed_transaction = wallet.sign_transaction(data.transaction);
+            let signed_transaction = wallet.sign_transaction(
+                data.transaction,
+                data.required_signer_key_branch,
+                data.required_signer_key_id,
+            );
             cli_println!(ANSI_GREEN, "✔️ Transfer transaction signed successfully");
             write_to_json_file(
                 &SignedTransactionOutput {
@@ -173,6 +201,8 @@ pub async fn handle_transfer_command(
 pub struct UnsignedTransactionOutput {
     pub transaction: UnsignedTransaction,
     pub lock_id: WalletLockId,
+    pub required_signer_key_branch: KeyBranch,
+    pub required_signer_key_id: KeyId,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

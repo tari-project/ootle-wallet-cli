@@ -4,14 +4,12 @@
 use crate::models::BalanceEntry;
 use anyhow::anyhow;
 use anyhow::Context;
-use rand::rngs::OsRng;
 use std::collections::{HashMap, HashSet};
-use tari_crypto::keys::SecretKey;
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_engine_types::template_lib_models::{
     ComponentAddress, ResourceAddress, StealthTransferStatement, UtxoAddress,
 };
-use tari_engine_types::FromByteType;
+use tari_engine_types::{FromByteType, ToByteType};
 use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_common_types::{Network, SubstateRequirement};
 use tari_ootle_wallet_sdk::apis::stealth_outputs::TransferStatementParams;
@@ -20,7 +18,8 @@ use tari_ootle_wallet_sdk::cipher_seed::CipherSeedRestore;
 use tari_ootle_wallet_sdk::constants::XTR;
 use tari_ootle_wallet_sdk::crypto::memo::Memo;
 use tari_ootle_wallet_sdk::models::{
-    AccountWithAddress, KeyBranch, KeyType, TransactionStatus, WalletLockId, WalletTransaction,
+    AccountWithAddress, KeyBranch, KeyId, KeyType, StealthOutputModel, TransactionStatus,
+    WalletLockId, WalletTransaction,
 };
 use tari_ootle_wallet_sdk::network::WalletNetworkInterface;
 use tari_ootle_wallet_sdk::{OotleAddress, SeedWords, WalletSdk};
@@ -30,7 +29,7 @@ use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInter
 use tari_ootle_wallet_sdk_services::notify::Notify;
 use tari_ootle_wallet_sdk_services::utxo_scanner::{UtxoRecovery, UtxoScanner};
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
-use tari_template_lib_types::crypto::{PedersenCommitmentBytes, RistrettoPublicKeyBytes};
+use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 use tari_template_lib_types::{Amount, ResourceType};
 use tari_transaction::{Transaction, UnsignedTransaction};
 use tokio::sync::broadcast;
@@ -142,13 +141,8 @@ impl Wallet {
             })
         }
 
-        let memos = stealth_outputs
+        let stealth_outputs_map = stealth_outputs
             .iter()
-            .filter_map(|o| Some((o.commitment, o.memo.as_ref()?.clone())))
-            .collect::<Vec<_>>();
-
-        let stealth_outputs = stealth_outputs
-            .into_iter()
             .filter(|o| !vaulted_resources.contains(&o.resource_address))
             .fold(HashMap::new(), |mut acc, o| {
                 acc.entry(o.resource_address)
@@ -160,9 +154,9 @@ impl Wallet {
                 acc
             });
 
-        let all_resources = sdk.resources_api().get_many(stealth_outputs.keys())?;
+        let all_resources = sdk.resources_api().get_many(stealth_outputs_map.keys())?;
 
-        for (resource_address, (num_outputs, total_value)) in stealth_outputs {
+        for (resource_address, (num_outputs, total_value)) in stealth_outputs_map {
             let resource = all_resources.get(&resource_address);
             balances.push(BalanceEntry {
                 vault_address: None,
@@ -181,7 +175,10 @@ impl Wallet {
             });
         }
 
-        Ok(BalanceStuff { balances, memos })
+        Ok(BalanceStuff {
+            balances,
+            utxos: stealth_outputs,
+        })
     }
 
     pub async fn check_indexer_connection(&self) -> anyhow::Result<()> {
@@ -280,8 +277,14 @@ impl Wallet {
         dest_address: &OotleAddress,
         fee_amount: u64,
         amount: u64,
+        outputs: &[u64],
         message: Option<&str>,
     ) -> anyhow::Result<TransferOutput> {
+        assert_eq!(
+            outputs.iter().sum::<u64>(),
+            amount,
+            "Outputs do not sum to input amount"
+        );
         let src_account = match src_account {
             Some(name) => self.sdk().accounts_api().get_account_by_name(name).unwrap(),
             None => self.sdk().accounts_api().get_default().unwrap(),
@@ -318,18 +321,37 @@ impl Wallet {
             .transpose()?;
         let src_address = src_account.address.try_from_byte_type()?;
 
+        let ch_memo = Memo::new_message("Change").unwrap();
         let change_output = Some(OutputToCreate {
             owner_address: &src_address,
             amount: total_locked_amount - Amount::from(amount) - Amount::from(fee_amount),
-            memo: None,
+            memo: Some(&ch_memo),
         })
         .filter(|o| o.amount.is_positive());
 
-        let transfer_amount = OutputToCreate {
-            owner_address: &dest_address,
-            amount: amount.into(),
-            memo: memo.as_ref(),
-        };
+        let memos = outputs
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                memo.as_ref()
+                    .map(|m| format!("{}: {}/{}", m.as_message().unwrap(), i + 1, outputs.len()))
+                    .map(|m| Memo::new_message(m).unwrap())
+            })
+            .collect::<Vec<_>>();
+
+        let transfer_outputs = outputs
+            .iter()
+            .zip(&memos)
+            .map(|(&amt, memo)| OutputToCreate {
+                owner_address: &dest_address,
+                amount: amt.into(),
+                memo: memo.as_ref(),
+            });
+
+        let nonce_key = self
+            .sdk
+            .key_manager_api()
+            .next_public_key(KeyBranch::Nonce)?;
 
         let params = TransferStatementParams {
             spend_key_branch: KeyBranch::Account,
@@ -339,9 +361,10 @@ impl Wallet {
             resource_view_key: None,
             inputs: &inputs,
             input_revealed_amount: Amount::zero(),
-            outputs: Some(transfer_amount).into_iter().chain(change_output),
+            outputs: transfer_outputs.chain(change_output),
             // TODO: this only works with XTR
             output_revealed_amount: fee_amount.into(),
+            required_signer: nonce_key.public_key.to_byte_type(),
         };
 
         let transfer = outputs_api.generate_transfer_statement(params)?;
@@ -350,15 +373,25 @@ impl Wallet {
             statement: transfer,
             resource_address: XTR,
             lock_id,
+            required_signer_key_branch: KeyBranch::Nonce,
+            required_signer_key_id: nonce_key.key_id,
         })
     }
 
-    pub fn sign_transaction(&self, transaction: UnsignedTransaction) -> Transaction {
-        let nonce = RistrettoSecretKey::random(&mut OsRng);
-        transaction
-            .authorized_sealed_signer()
-            .build(vec![])
-            .seal(&nonce)
+    pub fn sign_transaction(
+        &self,
+        transaction: UnsignedTransaction,
+        key_branch: KeyBranch,
+        key_id: KeyId,
+    ) -> Transaction {
+        self.sdk
+            .local_signer_api()
+            .sign(
+                key_branch,
+                key_id,
+                transaction.authorized_sealed_signer().build(),
+            )
+            .unwrap()
     }
 
     pub fn create_transfer_transaction(&self, transfer: &TransferOutput) -> UnsignedTransaction {
@@ -434,9 +467,11 @@ pub struct TransferOutput {
     pub statement: StealthTransferStatement,
     pub lock_id: WalletLockId,
     pub resource_address: ResourceAddress,
+    pub required_signer_key_branch: KeyBranch,
+    pub required_signer_key_id: KeyId,
 }
 
 pub struct BalanceStuff {
     pub balances: Vec<BalanceEntry>,
-    pub memos: Vec<(PedersenCommitmentBytes, Memo)>,
+    pub utxos: Vec<StealthOutputModel>,
 }

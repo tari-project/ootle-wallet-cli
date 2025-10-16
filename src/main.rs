@@ -21,6 +21,7 @@ use tari_crypto::tari_utilities::{ByteArray, SafePassword};
 use tari_engine_types::template_lib_models::ResourceAddress;
 use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_common_types::Network;
+use tari_ootle_wallet_sdk::constants::XTR;
 use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
@@ -265,7 +266,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 Some(name) => wallet.sdk().accounts_api().get_account_by_name(&name)?,
                 None => wallet.sdk().accounts_api().get_default()?,
             };
-            let BalanceStuff { balances, memos } =
+            let BalanceStuff { balances, utxos } =
                 wallet.get_balances_for_account(account.component_address())?;
             cli_println!(
                 Blue,
@@ -308,17 +309,20 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             table.print_stdout();
 
-            if !memos.is_empty() {
+            if !utxos.is_empty() {
                 cli_println!();
-                cli_println!(ANSI_BLUE, "Memos:");
+                cli_println!(ANSI_BLUE, "UTXOs:");
+                let resource = wallet.sdk().resources_api().get(&XTR).unwrap();
                 let mut table = Table::new();
-                table.set_titles(vec!["Utxo", "Message"]);
+                table.set_titles(vec!["Commitment", "Value", "Message"]);
 
-                for (commitment, memo) in memos {
-                    let Some(message) = memo.as_message() else {
-                        continue;
-                    };
-                    table.add_row(table_row![commitment, message]);
+                for utxo in utxos {
+                    let message = utxo.memo.as_ref().and_then(|m| m.as_message());
+                    table.add_row(table_row![
+                        utxo.commitment,
+                        utxo.value.to_decimal_string(resource.divisibility() as u32),
+                        message.display()
+                    ]);
                 }
                 table.print_stdout();
             }
