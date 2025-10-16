@@ -4,6 +4,7 @@
 use crate::models::BalanceEntry;
 use anyhow::anyhow;
 use anyhow::Context;
+use log::*;
 use std::collections::{HashMap, HashSet};
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_engine_types::template_lib_models::{
@@ -15,11 +16,13 @@ use tari_ootle_common_types::{Network, SubstateRequirement};
 use tari_ootle_wallet_sdk::apis::stealth_outputs::TransferStatementParams;
 use tari_ootle_wallet_sdk::apis::stealth_transfer::OutputToCreate;
 use tari_ootle_wallet_sdk::cipher_seed::CipherSeedRestore;
-use tari_ootle_wallet_sdk::constants::XTR;
+use tari_ootle_wallet_sdk::constants::{
+    XTR, XTR_FAUCET_COMPONENT_ADDRESS, XTR_FAUCET_VAULT_ADDRESS,
+};
 use tari_ootle_wallet_sdk::crypto::memo::Memo;
 use tari_ootle_wallet_sdk::models::{
-    AccountWithAddress, KeyBranch, KeyId, KeyType, StealthOutputModel, TransactionStatus,
-    WalletLockId, WalletTransaction,
+    AccountWithAddress, KeyBranch, KeyId, KeyType, NewAccountData, StealthOutputModel,
+    TransactionStatus, WalletLockId, WalletTransaction,
 };
 use tari_ootle_wallet_sdk::network::WalletNetworkInterface;
 use tari_ootle_wallet_sdk::{OotleAddress, SeedWords, WalletSdk};
@@ -31,7 +34,7 @@ use tari_ootle_wallet_sdk_services::utxo_scanner::{UtxoRecovery, UtxoScanner};
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 use tari_template_lib_types::{Amount, ResourceType};
-use tari_transaction::{Transaction, UnsignedTransaction};
+use tari_transaction::{args, Transaction, TransactionId, UnsignedTransaction};
 use tokio::sync::broadcast;
 
 pub type Sdk = WalletSdk<SqliteWalletStore, IndexerRestApiNetworkInterface>;
@@ -271,6 +274,108 @@ impl Wallet {
         Ok(account)
     }
 
+    pub async fn request_testnet_faucet_coins<T: Into<Amount>>(
+        &self,
+        address: &ComponentAddress,
+        amount: T,
+    ) -> anyhow::Result<()> {
+        let sdk = self.sdk();
+        let accounts_api = sdk.accounts_api();
+
+        let account = accounts_api.get_account_by_address(address)?;
+        const FEE: u64 = 1_000;
+        let amount = amount.into();
+
+        let account_owner_key_id = account.owner_key_id().ok_or_else(|| {
+            anyhow!("cannot create free test coins for an account without an owner key")
+        })?;
+
+        info!(
+            "💰️ Creating free test coins for account: {}",
+            account.account.component_address,
+        );
+
+        let mut inputs = vec![
+            SubstateRequirement::unversioned(XTR),
+            SubstateRequirement::unversioned(XTR_FAUCET_COMPONENT_ADDRESS),
+            SubstateRequirement::unversioned(XTR_FAUCET_VAULT_ADDRESS),
+        ];
+
+        if account.is_confirmed_on_chain() {
+            info!(
+                "💰️ create free test coins: Account {} is on-chain",
+                account.account.component_address
+            );
+            // Add account inputs
+            let account_substate = sdk
+                .substate_api()
+                .get_substate(&account.account.component_address.into())?;
+            inputs.push(account_substate.substate_id.into());
+
+            // Add all versioned account child addresses as inputs
+            let child_addresses = sdk
+                .substate_api()
+                .load_dependent_substates(&[&account.account.component_address.into()])?;
+            info!(
+                "💰️ create free test coins: Loaded {} vaults for existing account: {}",
+                child_addresses.len(),
+                account
+            );
+            inputs.extend(child_addresses);
+        } else {
+            info!(
+                "💰️ create free test coins: Account {} is not on-chain, Will create it",
+                account.account.component_address
+            );
+        }
+
+        let transaction = Transaction::builder()
+            .for_network(sdk.network().as_byte())
+            .with_fee_instructions_builder(|fee_builder| {
+                fee_builder
+                    .call_method(XTR_FAUCET_COMPONENT_ADDRESS, "take", args![amount])
+                    .put_last_instruction_output_on_workspace("faucet_funds")
+                    .then(|builder| {
+                        if account.is_confirmed_on_chain() {
+                            builder.call_method(
+                                *account.component_address(),
+                                "deposit",
+                                args![Workspace("faucet_funds")],
+                            )
+                        } else {
+                            // If the account is not on-chain yet, we create it
+                            builder.create_account_with_bucket(
+                                *account.address.account_public_key(),
+                                "faucet_funds",
+                            )
+                        }
+                    })
+                    .call_method(*account.component_address(), "pay_fee", args![FEE])
+            })
+            .with_inputs(inputs.into_iter().map(|input| input.into_unversioned()))
+            .build();
+
+        let transaction =
+            sdk.local_signer_api()
+                .sign(KeyBranch::Account, account_owner_key_id, transaction)?;
+
+        info!(
+            "💰️ create free test coins: Submitting transaction {} for account: {}",
+            transaction.calculate_id(),
+            account.account,
+        );
+
+        self.submit_transaction(
+            transaction,
+            (!account.is_confirmed_on_chain()).then(|| NewAccountData {
+                address: *account.component_address(),
+            }),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub fn create_transfer(
         &self,
         src_account: Option<&str>,
@@ -415,20 +520,31 @@ impl Wallet {
 
     pub async fn submit_transaction(
         &self,
-        lock_id: WalletLockId,
         transaction: Transaction,
+        new_account_data: Option<NewAccountData>,
+        lock_id: Option<WalletLockId>,
     ) -> anyhow::Result<WalletTransaction> {
-        let id = self
-            .sdk
-            .transaction_api()
-            .insert_new_transaction(transaction, None, false)?;
-        self.sdk
-            .stealth_outputs_api()
-            .locks_set_transaction_id(lock_id, id)?;
+        let id = self.sdk.transaction_api().insert_new_transaction(
+            transaction,
+            new_account_data,
+            false,
+        )?;
+        if let Some(lock_id) = lock_id {
+            self.sdk
+                .stealth_outputs_api()
+                .locks_set_transaction_id(lock_id, id)?;
+        }
         if !self.sdk.transaction_api().submit_transaction(id).await? {
             return Err(anyhow!("Failed to submit transaction {}", id));
         }
 
+        self.wait_for_transaction_to_finalize(id).await
+    }
+
+    async fn wait_for_transaction_to_finalize(
+        &self,
+        id: TransactionId,
+    ) -> anyhow::Result<WalletTransaction> {
         loop {
             let maybe_tx = self
                 .sdk()
@@ -438,7 +554,7 @@ impl Wallet {
             match maybe_tx {
                 Some(tx) => {
                     if matches!(tx.status, TransactionStatus::Accepted) {
-                        log::info!("Transaction {} was accepted", id);
+                        info!("Transaction {} was accepted", id);
                         return Ok(tx);
                     } else {
                         return Err(anyhow!(
@@ -454,7 +570,7 @@ impl Wallet {
                     }
                 }
                 None => {
-                    log::info!("Transaction {} is still pending...", id);
+                    info!("Transaction {} is still pending...", id);
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }

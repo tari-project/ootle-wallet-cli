@@ -133,6 +133,18 @@ enum Command {
         )]
         output_path: Option<Box<Path>>,
     },
+    #[clap(alias = "faucet")]
+    GetFaucetCoins {
+        #[arg(short, long, help = "Optional account name to get testnet coins for")]
+        account_name: Option<Box<str>>,
+        #[arg(
+            short,
+            long,
+            default_value_t = 1_000_000_000,
+            help = "Amount of testnet coins to request (in micro XTR)"
+        )]
+        amount: u64,
+    },
     #[clap(subcommand)]
     Transfer(TransferCommand),
     /// Create new seed words
@@ -339,6 +351,7 @@ async fn main() -> Result<(), anyhow::Error> {
         } => {
             let account = wallet.create_account(&name, set_active)?;
             cli_println!(ANSI_GREEN, "✔️ Account '{}' created successfully", name);
+
             let json = serde_json::json!({
                 "component_address": account.component_address(),
                 "address": account.address(),
@@ -352,6 +365,34 @@ async fn main() -> Result<(), anyhow::Error> {
                     .context("failed to write account details to file")?;
                 cli_println!(ANSI_WHITE, "Account details written to {}", path.display());
             }
+        }
+        Command::GetFaucetCoins {
+            account_name,
+            amount,
+        } => {
+            let account = wallet.get_account_or_default(account_name.as_deref())?;
+
+            spinner(
+                "🤑 Requesting testnet faucet coins...",
+                wallet.request_testnet_faucet_coins(account.component_address(), amount),
+                |mut spinner, result| match result {
+                    Ok(_) => {
+                        spinner.stop_and_persist("✔️", "Testnet faucet coins received".to_string());
+                    }
+                    Err(err) => {
+                        spinner.stop_and_persist(
+                            "❌",
+                            format!("Failed to get testnet faucet coins: {err}"),
+                        );
+                    }
+                },
+            )
+            .await;
+            cli_println!(
+                ANSI_GREEN,
+                "✔️ Account '{}' has testnet coins. Remember to scan to see them in your balance.",
+                account.name().display()
+            );
         }
         Command::Transfer(command) => {
             handle_transfer_command(&mut wallet, command).await?;

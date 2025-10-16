@@ -1,4 +1,5 @@
 // Transfer sub command
+use crate::spinner::spinner;
 use crate::wallet::Wallet;
 use crate::{cli_println, write_to_json_file, ANSI_GREEN, ANSI_WHITE};
 use anyhow::Context;
@@ -175,9 +176,24 @@ pub async fn handle_transfer_command(
             )
             .context("failed to parse transaction file")?;
             let tx_id = data.transaction.calculate_id();
-            let tx = wallet
-                .submit_transaction(data.lock_id, data.transaction)
-                .await?;
+            let tx = spinner(
+                format!("Submitting transaction {}...", tx_id),
+                wallet.submit_transaction(data.transaction, None, Some(data.lock_id)),
+                |mut spinner, result| match result {
+                    Ok(tx) => {
+                        spinner.stop_and_persist(
+                            "✔",
+                            format!("Transaction {} submitted successfully", tx_id),
+                        );
+                        Ok(tx)
+                    }
+                    Err(e) => {
+                        spinner.stop_and_persist("✘", format!("Failed to submit transaction: {e}"));
+                        Err(e)
+                    }
+                },
+            )
+            .await?;
 
             cli_println!(ANSI_GREEN, "✔️ Transfer transaction submitted successfully");
             cli_println!(ANSI_WHITE, "Transaction ID: {} {:?}", tx_id, tx.status);
