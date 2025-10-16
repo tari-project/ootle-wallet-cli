@@ -124,7 +124,7 @@ pub async fn handle_transfer_command(
                 std::fs::File::open(transfer_file).context("failed to open transfer file")?,
             )
             .context("failed to parse transfer file")?;
-            let transaction = wallet.create_transfer_transaction(&transfer);
+            let transaction = wallet.create_transfer_transaction(&transfer)?;
             cli_println!(ANSI_GREEN, "✔️ Transfer transaction created successfully");
             write_to_json_file(
                 &UnsignedTransactionOutput {
