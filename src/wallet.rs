@@ -537,12 +537,17 @@ impl Wallet {
 
         let maybe_account_input = revealed_input_amount
             .is_positive()
-            .then(|| transfer.account_component_address);
-        let maybe_vault_input = self
-            .sdk()
-            .accounts_api()
-            .get_vault_by_resource(&transfer.account_component_address, &XTR)
-            .optional()?;
+            .then_some(transfer.account_component_address);
+        let maybe_vault_input = maybe_account_input
+            .as_ref()
+            .and_then(|_| {
+                self.sdk()
+                    .accounts_api()
+                    .get_vault_by_resource(&transfer.account_component_address, &XTR)
+                    .optional()
+                    .transpose()
+            })
+            .transpose()?;
 
         let transaction = Transaction::builder()
             .for_network(self.network().as_byte())
