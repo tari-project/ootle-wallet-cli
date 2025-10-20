@@ -437,9 +437,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.39"
+version = "1.2.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1354349954c6fc9cb0deab020f27f783cf0b604e8bb754dc4658ecf0d29c35f"
+checksum = "ac9fe6cdbb24b6ade63616c0a0688e45bb56732262c158df3c0c4bea4ca47cb7"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -530,7 +530,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
 dependencies = [
  "ciborium-io",
- "half 2.6.0",
+ "half 2.7.1",
 ]
 
 [[package]]
@@ -630,9 +630,9 @@ checksum = "2f421161cb492475f1661ddc9815a745a1c894592070661180fdec3d4872e9c3"
 
 [[package]]
 name = "const_format"
-version = "0.2.34"
+version = "0.2.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "126f97965c8ad46d6d9163268ff28432e8f6a1196a55578867832e3049df63dd"
+checksum = "7faa7469a93a566e9ccc1c73fe783b4a65c274c5ace346038dca9c39fe0030ad"
 dependencies = [
  "const_format_proc_macros",
 ]
@@ -938,7 +938,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d162beedaa69905488a8da94f5ac3edb4dd4788b732fadb7bd120b2625c1976"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.106",
 ]
 
 [[package]]
@@ -1246,9 +1246,9 @@ checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.2"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ced73b1dacfc750a6db6c0a0c3a3853c8b41997e2e2c563dc90804ae6867959"
+checksum = "52051878f80a721bb68ebfbc930e07b65ba72f2da88968ea5c06fd6ca3d3a127"
 
 [[package]]
 name = "fixed-hash"
@@ -1422,20 +1422,20 @@ dependencies = [
  "cfg-if",
  "js-sys",
  "libc",
- "wasi 0.11.1+wasi-snapshot-preview1",
+ "wasi",
  "wasm-bindgen",
 ]
 
 [[package]]
 name = "getrandom"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26145e563e54f2cadc477553f1ec5ee650b00862f0a58bcd12cbdc5f0ea2d2f4"
+checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
  "libc",
  "r-efi",
- "wasi 0.14.7+wasi-0.2.4",
+ "wasip2",
 ]
 
 [[package]]
@@ -1482,12 +1482,13 @@ checksum = "1b43ede17f21864e81be2fa654110bf1e793774238d86ef8555c37e6519c0403"
 
 [[package]]
 name = "half"
-version = "2.6.0"
+version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "459196ed295495a68f7d7fe1d84f6c4b7ff0e21fe3017b2f283c6fac3ad803c9"
+checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
 dependencies = [
  "cfg-if",
  "crunchy",
+ "zerocopy",
 ]
 
 [[package]]
@@ -2168,7 +2169,7 @@ checksum = "78bed444cc8a2160f01cbcf811ef18cac863ad68ae8ca62092e8db51d51c761c"
 dependencies = [
  "libc",
  "log",
- "wasi 0.11.1+wasi-snapshot-preview1",
+ "wasi",
  "windows-sys 0.59.0",
 ]
 
@@ -2418,9 +2419,9 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openssl"
-version = "0.10.73"
+version = "0.10.74"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8505734d46c8ab1e19a1dce3aef597ad87dcb4c37e7188231769bd6bd51cebf8"
+checksum = "24ad14dd45412269e1a30f52ad8f0664f0f4f4a89ee8fe28c3b3527021ebb654"
 dependencies = [
  "bitflags 2.9.4",
  "cfg-if",
@@ -2450,9 +2451,9 @@ checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.109"
+version = "0.9.110"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90096e2e47630d78b7d1c20952dc621f957103f8bc2c8359ec81290d75238571"
+checksum = "0a9f0075ba3c21b09f8e8b2026584b1d18d49388648f2fbbf3c97ea8deced8e2"
 dependencies = [
  "cc",
  "libc",
@@ -3164,9 +3165,9 @@ dependencies = [
 
 [[package]]
 name = "serde_spanned"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5417783452c2be558477e104686f7de5dae53dba813c28435e0e70f82d9b04ee"
+checksum = "e24345aa0fe688594e73770a5f6d1b216508b4f93484c0026d521acd30134392"
 dependencies = [
  "serde_core",
 ]
@@ -3559,7 +3560,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 [[package]]
 name = "tari_bor"
 version = "0.11.1"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "borsh",
  "ciborium",
@@ -3650,8 +3651,8 @@ dependencies = [
 
 [[package]]
 name = "tari_consensus_types"
-version = "0.12.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+version = "0.13.1"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "borsh",
  "serde",
@@ -3689,8 +3690,8 @@ dependencies = [
 
 [[package]]
 name = "tari_engine_types"
-version = "0.12.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+version = "0.13.1"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "base64 0.21.7",
  "blake2",
@@ -3731,8 +3732,8 @@ dependencies = [
 
 [[package]]
 name = "tari_indexer_client"
-version = "0.12.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+version = "0.13.1"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "anyhow",
  "bounded-vec",
@@ -3798,8 +3799,8 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_address"
-version = "0.12.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+version = "0.13.1"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "bech32",
  "serde",
@@ -3812,8 +3813,8 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_common_types"
-version = "0.12.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+version = "0.13.1"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "blake2",
  "borsh",
@@ -3839,8 +3840,8 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_storage"
-version = "0.12.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+version = "0.13.1"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "anyhow",
  "bitflags 2.9.4",
@@ -3864,8 +3865,8 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_wallet_crypto"
-version = "0.12.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+version = "0.13.1"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "argon2 0.5.3",
  "blake2",
@@ -3887,8 +3888,8 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_wallet_sdk"
-version = "0.12.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+version = "0.13.1"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "anyhow",
  "blake2",
@@ -3919,8 +3920,8 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_wallet_sdk_services"
-version = "0.12.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+version = "0.13.1"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "anyhow",
  "futures",
@@ -3945,8 +3946,8 @@ dependencies = [
 
 [[package]]
 name = "tari_ootle_wallet_storage_sqlite"
-version = "0.12.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+version = "0.13.1"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "bigdecimal",
  "diesel",
@@ -4027,8 +4028,8 @@ dependencies = [
 
 [[package]]
 name = "tari_state_tree"
-version = "0.12.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+version = "0.13.1"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "log",
  "serde",
@@ -4043,7 +4044,7 @@ dependencies = [
 [[package]]
 name = "tari_template_abi"
 version = "0.14.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "serde",
  "tari_bor",
@@ -4051,8 +4052,8 @@ dependencies = [
 
 [[package]]
 name = "tari_template_builtin"
-version = "0.12.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+version = "0.13.1"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "tari_template_lib",
 ]
@@ -4060,7 +4061,7 @@ dependencies = [
 [[package]]
 name = "tari_template_lib"
 version = "0.14.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "borsh",
  "serde",
@@ -4073,7 +4074,7 @@ dependencies = [
 [[package]]
 name = "tari_template_lib_types"
 version = "0.14.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "bnum",
  "borsh",
@@ -4085,7 +4086,7 @@ dependencies = [
 [[package]]
 name = "tari_template_macros"
 version = "0.14.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4096,8 +4097,8 @@ dependencies = [
 
 [[package]]
 name = "tari_transaction"
-version = "0.12.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#b5c6a76448c0d5d7f63c18e9e68d003f83d010b6"
+version = "0.13.1"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#2cff16c670944f92326d06ace17fb2bb1195e859"
 dependencies = [
  "borsh",
  "hex",
@@ -4186,7 +4187,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d31c77bdf42a745371d260a26ca7163f1e0924b64afa0b688e61b5a9fa02f16"
 dependencies = [
  "fastrand",
- "getrandom 0.3.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.1",
@@ -4413,7 +4414,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00e5e5d9bf2475ac9d4f0d9edab68cc573dc2fd644b0dba36b0c30a92dd9eaa0"
 dependencies = [
  "serde_core",
- "serde_spanned 1.0.2",
+ "serde_spanned 1.0.3",
  "toml_datetime 0.7.2",
  "toml_parser",
  "winnow",
@@ -4662,7 +4663,7 @@ version = "1.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f87b8aa10b915a06587d0dec516c282ff295b475d94abf425d62b57710070a2"
 dependencies = [
- "getrandom 0.3.3",
+ "getrandom 0.3.4",
  "js-sys",
  "serde",
  "wasm-bindgen",
@@ -4694,15 +4695,6 @@ name = "wasi"
 version = "0.11.1+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
-
-[[package]]
-name = "wasi"
-version = "0.14.7+wasi-0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "883478de20367e224c0090af9cf5f9fa85bed63a95c1abf3afc5c083ebc06e8c"
-dependencies = [
- "wasip2",
-]
 
 [[package]]
 name = "wasip2"
@@ -4913,9 +4905,9 @@ dependencies = [
 
 [[package]]
 name = "windows-implement"
-version = "0.60.1"
+version = "0.60.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edb307e42a74fb6de9bf3a02d9712678b22399c87e6fa869d6dfcd8c1b7754e0"
+checksum = "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4924,9 +4916,9 @@ dependencies = [
 
 [[package]]
 name = "windows-interface"
-version = "0.59.2"
+version = "0.59.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0abd1ddbc6964ac14db11c7213d6532ef34bd9aa042c2e5935f59d7908b46a5"
+checksum = "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358"
 dependencies = [
  "proc-macro2",
  "quote",
