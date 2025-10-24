@@ -16,7 +16,7 @@ use tari_ootle_common_types::optional::Optional;
 use tari_ootle_common_types::{Network, SubstateRequirement};
 use tari_ootle_wallet_sdk::apis::confidential_transfer::ConfidentialTransferInputSelection;
 use tari_ootle_wallet_sdk::apis::stealth_outputs::TransferStatementParams;
-use tari_ootle_wallet_sdk::apis::stealth_transfer::OutputToCreate;
+use tari_ootle_wallet_sdk::apis::stealth_transfer::StealthOutputToCreate;
 use tari_ootle_wallet_sdk::cipher_seed::CipherSeedRestore;
 use tari_ootle_wallet_sdk::constants::{
     XTR, XTR_FAUCET_COMPONENT_ADDRESS, XTR_FAUCET_VAULT_ADDRESS,
@@ -27,7 +27,7 @@ use tari_ootle_wallet_sdk::models::{
     TransactionStatus, WalletLockId, WalletTransaction,
 };
 use tari_ootle_wallet_sdk::network::WalletNetworkInterface;
-use tari_ootle_wallet_sdk::{OotleAddress, SeedWords, WalletSdk};
+use tari_ootle_wallet_sdk::{OotleAddress, RistrettoOotleAddress, SeedWords, WalletSdk};
 use tari_ootle_wallet_sdk_services::account_monitor::AccountScanner;
 use tari_ootle_wallet_sdk_services::events::WalletEvent;
 use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
@@ -109,7 +109,7 @@ impl Wallet {
         let vaults = sdk.accounts_api().get_vaults_by_account(account_address)?;
         let stealth_outputs = sdk
             .stealth_outputs_api()
-            .get_unspent_outputs_by_account(account_address)?;
+            .get_unspent_outputs_by_account(account_address, false)?;
 
         let mut balances = Vec::with_capacity(vaults.len());
         let mut vaulted_resources = HashSet::new();
@@ -412,9 +412,10 @@ impl Wallet {
             ConfidentialTransferInputSelection::PreferRevealed,
         )?;
 
-        let dest_address = dest_address.try_from_byte_type().map_err(|err| {
-            anyhow!("Destination address is not a Ristretto Ootle address: {err}")
-        })?;
+        let dest_address: RistrettoOotleAddress =
+            dest_address.try_from_byte_type().map_err(|err| {
+                anyhow!("Destination address is not a Ristretto Ootle address: {err}")
+            })?;
 
         let memo = message
             .map(|s| {
@@ -428,8 +429,8 @@ impl Wallet {
         let spends_revealed_funds = inputs_to_spend.revealed.is_positive();
 
         let ch_memo = Memo::new_message("Change").unwrap();
-        let change_output = Some(OutputToCreate {
-            owner_address: &src_address,
+        let change_output = Some(StealthOutputToCreate {
+            owner_address: src_address,
             amount: inputs_to_spend.total_amount()
                 - Amount::from(amount)
                 - Amount::from(fee_amount),
@@ -447,14 +448,15 @@ impl Wallet {
             })
             .collect::<Vec<_>>();
 
-        let transfer_outputs = outputs
-            .iter()
-            .zip(&memos)
-            .map(|(&amt, memo)| OutputToCreate {
-                owner_address: &dest_address,
-                amount: amt.into(),
-                memo: memo.as_ref(),
-            });
+        let transfer_outputs =
+            outputs
+                .iter()
+                .zip(&memos)
+                .map(|(&amt, memo)| StealthOutputToCreate {
+                    owner_address: dest_address.clone(),
+                    amount: amt.into(),
+                    memo: memo.as_ref(),
+                });
 
         let (key_branch, key_id, public_key) = if spends_revealed_funds {
             (
@@ -587,7 +589,7 @@ impl Wallet {
         )?;
         if let Some(lock_id) = lock_id {
             self.sdk
-                .stealth_outputs_api()
+                .transaction_api()
                 .locks_set_transaction_id(lock_id, id)?;
         }
         if !self.sdk.transaction_api().submit_transaction(id).await? {
@@ -609,11 +611,11 @@ impl Wallet {
                 .await?;
             match maybe_tx {
                 Some(tx) => {
-                    if matches!(tx.status, TransactionStatus::Accepted) {
+                    return if matches!(tx.status, TransactionStatus::Accepted) {
                         info!("Transaction {} was accepted", id);
-                        return Ok(tx);
+                        Ok(tx)
                     } else {
-                        return Err(anyhow!(
+                        Err(anyhow!(
                             "Transaction {} failed: {:?} {} {}",
                             id,
                             tx.status,
@@ -622,8 +624,8 @@ impl Wallet {
                                 .as_ref()
                                 .and_then(|f| f.result.any_reject())
                                 .display()
-                        ));
-                    }
+                        ))
+                    };
                 }
                 None => {
                     info!("Transaction {} is still pending...", id);
