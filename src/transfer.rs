@@ -205,7 +205,7 @@ pub async fn handle_transfer_command(
             );
         }
         TransferCommand::ReleaseLock { lock_id } => {
-            wallet.sdk().stealth_outputs_api().release_lock(lock_id)?;
+            wallet.sdk().locks_api().release_lock(lock_id)?;
             cli_println!(ANSI_GREEN, "✔️ Transfer lock released successfully");
         }
     }

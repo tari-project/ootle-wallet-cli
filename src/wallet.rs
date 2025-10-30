@@ -6,6 +6,7 @@ use anyhow::anyhow;
 use anyhow::Context;
 use log::*;
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_engine_types::template_lib_models::{
     ComponentAddress, ResourceAddress, StealthTransferStatement, UtxoAddress,
@@ -14,7 +15,7 @@ use tari_engine_types::{FromByteType, ToByteType};
 use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_common_types::optional::Optional;
 use tari_ootle_common_types::{Network, SubstateRequirement};
-use tari_ootle_wallet_sdk::apis::confidential_transfer::ConfidentialTransferInputSelection;
+use tari_ootle_wallet_sdk::apis::confidential_transfer::UtxoInputSelection;
 use tari_ootle_wallet_sdk::apis::stealth_outputs::TransferStatementParams;
 use tari_ootle_wallet_sdk::apis::stealth_transfer::StealthOutputToCreate;
 use tari_ootle_wallet_sdk::cipher_seed::CipherSeedRestore;
@@ -403,13 +404,16 @@ impl Wallet {
 
         let outputs_api = self.sdk().stealth_outputs_api();
 
-        let lock_id = outputs_api.create_lock()?;
+        let lock = self
+            .sdk()
+            .locks_api()
+            .create_lock_with_timeout(Duration::from_secs(100))?;
         let inputs_to_spend = self.sdk().stealth_transfer_api().lock_inputs_for_transfer(
-            lock_id,
+            lock.id(),
             src_account.component_address(),
             XTR,
             (amount + fee_amount).into(),
-            ConfidentialTransferInputSelection::PreferRevealed,
+            UtxoInputSelection::PreferRevealed,
         )?;
 
         let dest_address: RistrettoOotleAddress =
@@ -495,6 +499,8 @@ impl Wallet {
         };
 
         let transfer = outputs_api.generate_transfer_statement(params)?;
+
+        let lock_id = lock.keep_locked();
 
         Ok(TransferOutput {
             statement: transfer,
