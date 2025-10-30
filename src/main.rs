@@ -56,7 +56,7 @@ struct CommonArgs {
     #[arg(
         short = 'i',
         long,
-        default_value = "http://18.217.22.26:12500/json_rpc",
+        default_value = "http://217.182.93.147:50124/",
         help = "URL of an Ootle indexer API"
     )]
     pub indexer_url: Url,
