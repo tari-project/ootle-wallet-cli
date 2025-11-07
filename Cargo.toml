@@ -8,7 +8,9 @@ license = "BSD-3-Clause"
 
 [dependencies]
 tari_ootle_wallet_sdk = { git = "https://github.com/tari-project/tari-ootle.git", branch = "development" }
-tari_ootle_wallet_sdk_services = { git = "https://github.com/tari-project/tari-ootle.git", branch = "development", features = ["indexer_client"] }
+tari_ootle_wallet_sdk_services = { git = "https://github.com/tari-project/tari-ootle.git", branch = "development", features = [
+    "indexer_client",
+] }
 tari_ootle_wallet_storage_sqlite = { git = "https://github.com/tari-project/tari-ootle.git", branch = "development" }
 tari_template_lib_types = { git = "https://github.com/tari-project/tari-ootle.git", branch = "development" }
 tari_ootle_common_types = { git = "https://github.com/tari-project/tari-ootle.git", branch = "development" }
@@ -30,7 +32,11 @@ env_logger = "0.11.8"
 futures = "0.3.31"
 log = "0.4.28"
 clap = { version = "4.5.48", features = ["derive"] }
-tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.47.1", features = [
+    "macros",
+    "rt-multi-thread",
+    "process",
+] }
 url = "2.5.7"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -38,6 +44,7 @@ spinners = "4.1.1"
 termimad = "0.34.0"
 rand = "0.8"
 zeroize = "1.8.2"
+toml = "0.8"
 
 [[bin]]
 name = "ootle"
