@@ -5,7 +5,19 @@ use super::default_registries::get_default_registries;
 use super::search::TappletManifest;
 use crate::wallet::Wallet;
 use anyhow::{Context, anyhow};
+use blake2::Blake2b512;
+use blake2::Digest;
+use blake2::digest::Update;
 use std::path::Path;
+use tari_crypto::keys::PublicKey;
+use tari_crypto::keys::SecretKey;
+use tari_crypto::ristretto::RistrettoPublicKey;
+use tari_crypto::ristretto::RistrettoSecretKey;
+use tari_crypto::tari_utilities::ByteArray;
+use tari_engine_types::template_lib_models::ComponentAddress;
+use tari_ootle_wallet_sdk::models::KeyIdOrPublicKey;
+use tari_ootle_wallet_sdk::models::KeyType;
+use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 
 /// Install a tapplet from a registry
 pub async fn install_from_registry(
@@ -159,18 +171,17 @@ pub async fn install_from_local(
     }
 
     // Get accounts to install for
-    // let accounts = if let Some(name) = account_name {
-    //     vec![wallet.sdk().accounts_api().get_account_by_name(name)?]
-    // } else {
-    //     // Get all accounts
-    //     wallet.sdk().accounts_api().get_many(0, 100)?
-    // };
+    let account = if let Some(name) = account_name {
+        wallet.sdk().accounts_api().get_account_by_name(name)?
+    } else {
+        // Get all accounts
+        wallet.sdk().accounts_api().get_default()?
+    };
 
-    // if accounts.is_empty() {
-    //     anyhow::bail!("No accounts found. Create an account first.");
-    // }
-
-    // println!("\nInstalling tapplet for {} account(s)...", accounts.len());
+    println!(
+        "\nInstalling tapplet for account '{}'",
+        account.account().name.as_deref().unwrap_or("<unnamed>")
+    );
 
     // Install the tapplet files
     let installed_dir = cache_directory.join("installed").join(&manifest.name);
@@ -179,15 +190,54 @@ pub async fn install_from_local(
     // Copy tapplet files
     copy_dir_recursive(path, &installed_dir)?;
 
-    // // Create child accounts for each parent account
-    // for account in &accounts {
-    //     println!(
-    //         "  ✓ Installed for account '{}'",
-    //         account.account().name.as_deref().unwrap_or("<unnamed>")
-    //     );
-    // }
+    // Create the new child account
+    let key_id = account.view_only_key_id();
+    let parent_view_key = wallet.sdk().key_manager_api().get_view_only_key(key_id)?;
 
-    println!(
+    let tapplet_private_view_key_bytes = Blake2b512::new()
+        .chain(b"tapplet_ootle_storage_address")
+        .chain(parent_view_key.secret.as_bytes())
+        .chain(hex::decode(&manifest.public_key)?)
+        .finalize();
+    let view_key = RistrettoSecretKey::from_uniform_bytes(&tapplet_private_view_key_bytes)
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    let label = format!("tapplet_view_key_{}", manifest.name);
+    let new_account_name = format!("tapplet_{}", manifest.name);
+    let new_key_id =
+        wallet
+            .sdk()
+            .key_manager_api()
+            .import_key(&label, &view_key, KeyType::ViewOnly)?;
+
+    // let account_address = sdk
+    //     .accounts_api()
+    //     .derive_account_address_from_public_key(&parent_view_key.public_key)?;
+
+    // let spend_key = wallet
+    //     .sdk()
+    //     .key_manager_api()
+    //     .get_public_key(KeyBranch::Spend, key_id)?;
+    let public_view_key = RistrettoPublicKeyBytes::from_bytes(
+        RistrettoPublicKey::from_secret_key(&view_key).as_bytes(),
+    )?;
+    let new_account_address = wallet
+        .sdk()
+        .accounts_api()
+        .derive_account_address_from_public_key(&public_view_key);
+    // let spend_key =
+
+    let tapplet_account = wallet.sdk().accounts_api().add_account(
+        Some(&new_account_name),
+        &new_account_address,
+        new_key_id,
+        KeyIdOrPublicKey::PublicKey(public_view_key.clone()),
+        false,
+        false,
+    )?;
+    // todo!();
+    // Create the child view key.
+    let child_view_key = println!(
         "\n✓ Tapplet '{}' v{} installed successfully",
         manifest.name, manifest.version
     );

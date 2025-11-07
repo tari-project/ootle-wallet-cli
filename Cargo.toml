@@ -45,7 +45,8 @@ termimad = "0.34.0"
 rand = "0.8"
 zeroize = "1.8.2"
 toml = "0.8"
-
+hex = "0.4.3"
+blake2 = "0.10.6"
 [[bin]]
 name = "ootle"
 path = "src/main.rs"

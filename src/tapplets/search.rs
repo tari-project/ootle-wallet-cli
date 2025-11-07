@@ -13,6 +13,7 @@ pub struct TappletManifest {
     pub description: Option<String>,
     pub author: Option<String>,
     pub repository: Option<String>,
+    pub public_key: String,
 }
 
 /// Search for tapplets matching the query string
@@ -27,10 +28,7 @@ pub async fn search_tapplets(
         let registry_dir = cache_directory.join("registries").join(name);
 
         if !registry_dir.exists() {
-            println!(
-                "Registry '{}' not found. Run 'tapplet fetch' first.",
-                name
-            );
+            println!("Registry '{}' not found. Run 'tapplet fetch' first.", name);
             continue;
         }
 
@@ -40,9 +38,10 @@ pub async fn search_tapplets(
             continue;
         }
 
-        for entry in std::fs::read_dir(&tapplets_dir)
-            .context(format!("Failed to read tapplets directory: {:?}", tapplets_dir))?
-        {
+        for entry in std::fs::read_dir(&tapplets_dir).context(format!(
+            "Failed to read tapplets directory: {:?}",
+            tapplets_dir
+        ))? {
             let entry = entry?;
             let path = entry.path();
 

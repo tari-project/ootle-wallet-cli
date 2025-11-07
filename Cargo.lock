@@ -2383,9 +2383,11 @@ name = "ootle-wallet-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake2",
  "clap 4.5.48",
  "env_logger",
  "futures",
+ "hex",
  "log",
  "rand",
  "serde",
