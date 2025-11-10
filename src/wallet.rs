@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use crate::models::BalanceEntry;
-use anyhow::anyhow;
 use anyhow::Context;
+use anyhow::anyhow;
 use log::*;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -12,6 +12,7 @@ use tari_engine_types::template_lib_models::{
     ComponentAddress, ResourceAddress, StealthTransferStatement, UtxoAddress,
 };
 use tari_engine_types::{FromByteType, ToByteType};
+use tari_ootle_common_types::Epoch;
 use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_common_types::optional::Optional;
 use tari_ootle_common_types::{Network, SubstateRequirement};
@@ -23,6 +24,7 @@ use tari_ootle_wallet_sdk::constants::{
     XTR, XTR_FAUCET_COMPONENT_ADDRESS, XTR_FAUCET_VAULT_ADDRESS,
 };
 use tari_ootle_wallet_sdk::crypto::memo::Memo;
+use tari_ootle_wallet_sdk::models::WalletEvent;
 use tari_ootle_wallet_sdk::models::{
     AccountWithAddress, KeyBranch, KeyId, KeyType, NewAccountData, StealthOutputModel,
     TransactionStatus, WalletLockId, WalletTransaction,
@@ -30,14 +32,13 @@ use tari_ootle_wallet_sdk::models::{
 use tari_ootle_wallet_sdk::network::WalletNetworkInterface;
 use tari_ootle_wallet_sdk::{OotleAddress, RistrettoOotleAddress, SeedWords, WalletSdk};
 use tari_ootle_wallet_sdk_services::account_monitor::AccountScanner;
-use tari_ootle_wallet_sdk_services::events::WalletEvent;
 use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
 use tari_ootle_wallet_sdk_services::notify::Notify;
 use tari_ootle_wallet_sdk_services::utxo_scanner::{UtxoRecovery, UtxoScanner};
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 use tari_template_lib_types::{Amount, ResourceType};
-use tari_transaction::{args, Transaction, TransactionId, UnsignedTransaction};
+use tari_transaction::{Transaction, TransactionId, UnsignedTransaction, args};
 use tokio::sync::broadcast;
 
 pub type Sdk = WalletSdk<SqliteWalletStore, IndexerRestApiNetworkInterface>;
@@ -86,6 +87,7 @@ impl Wallet {
             &account_address,
             key_id,
             spend_public_key,
+            Epoch::zero(),
             false,
             true,
         )?;
@@ -447,7 +449,14 @@ impl Wallet {
             .enumerate()
             .map(|(i, _)| {
                 memo.as_ref()
-                    .map(|m| format!("{}: {}/{}", m.as_message().unwrap(), i + 1, outputs.len()))
+                    .map(|m| {
+                        format!(
+                            "{}: {}/{}",
+                            m.as_memo_message().unwrap(),
+                            i + 1,
+                            outputs.len()
+                        )
+                    })
                     .map(|m| Memo::new_message(m).unwrap())
             })
             .collect::<Vec<_>>();
