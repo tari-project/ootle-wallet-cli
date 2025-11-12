@@ -15,6 +15,8 @@ use tari_crypto::ristretto::RistrettoPublicKey;
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_crypto::tari_utilities::ByteArray;
 use tari_engine_types::template_lib_models::ComponentAddress;
+use tari_ootle_common_types::Epoch;
+use tari_ootle_wallet_sdk::models::EpochBirthday;
 use tari_ootle_wallet_sdk::models::KeyIdOrPublicKey;
 use tari_ootle_wallet_sdk::models::KeyType;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
@@ -232,6 +234,7 @@ pub async fn install_from_local(
         &new_account_address,
         new_key_id,
         KeyIdOrPublicKey::PublicKey(public_view_key.clone()),
+        Epoch::zero(),
         false,
         false,
     )?;
