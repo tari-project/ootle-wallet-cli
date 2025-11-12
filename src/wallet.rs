@@ -14,6 +14,7 @@ use tari_engine_types::template_lib_models::{
 use tari_engine_types::{FromByteType, ToByteType};
 use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_common_types::optional::Optional;
+use tari_ootle_common_types::Epoch;
 use tari_ootle_common_types::{Network, SubstateRequirement};
 use tari_ootle_wallet_sdk::apis::confidential_transfer::UtxoInputSelection;
 use tari_ootle_wallet_sdk::apis::stealth_outputs::TransferStatementParams;
@@ -24,13 +25,13 @@ use tari_ootle_wallet_sdk::constants::{
 };
 use tari_ootle_wallet_sdk::crypto::memo::Memo;
 use tari_ootle_wallet_sdk::models::{
-    AccountWithAddress, KeyBranch, KeyId, KeyType, NewAccountData, StealthOutputModel,
-    TransactionStatus, WalletLockId, WalletTransaction,
+    AccountWithAddress, KeyBranch, KeyId, KeyType, NewAccountData, TransactionStatus, WalletLockId,
+    WalletTransaction,
 };
+use tari_ootle_wallet_sdk::models::{StealthOutputInfo, WalletEvent};
 use tari_ootle_wallet_sdk::network::WalletNetworkInterface;
 use tari_ootle_wallet_sdk::{OotleAddress, RistrettoOotleAddress, SeedWords, WalletSdk};
 use tari_ootle_wallet_sdk_services::account_monitor::AccountScanner;
-use tari_ootle_wallet_sdk_services::events::WalletEvent;
 use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
 use tari_ootle_wallet_sdk_services::notify::Notify;
 use tari_ootle_wallet_sdk_services::utxo_scanner::{UtxoRecovery, UtxoScanner};
@@ -86,6 +87,7 @@ impl Wallet {
             &account_address,
             key_id,
             spend_public_key,
+            Epoch::zero(),
             false,
             true,
         )?;
@@ -118,12 +120,11 @@ impl Wallet {
             let (utxo_count, confidential_balance) = if vault.resource_type.is_stealth() {
                 let (utxo_count, stealth_balance) = stealth_outputs
                     .iter()
-                    .filter(|o| {
-                        o.owner_account == *account_address
-                            && o.resource_address == vault.resource_address
-                    })
+                    .filter(|o| o.resource_address == vault.resource_address)
                     .map(|o| o.value)
-                    .fold((0usize, Amount::zero()), |(cnt, acc), o| (cnt + 1, acc + o));
+                    .fold((0usize, Amount::zero()), |(cnt, acc), o| {
+                        (cnt + 1, acc + Amount::from(o))
+                    });
 
                 if stealth_balance.is_positive() {
                     // If the vault exists, we add the confidential balance to this entry and, we don't want to add it again to the balances list for stealth utxos below.
@@ -154,9 +155,9 @@ impl Wallet {
                 acc.entry(o.resource_address)
                     .and_modify(|(cnt, v)| {
                         *cnt += 1;
-                        *v += o.value
+                        *v += Amount::from(o.value)
                     })
-                    .or_insert((1, o.value));
+                    .or_insert((1, Amount::from(o.value)));
                 acc
             });
 
@@ -433,21 +434,32 @@ impl Wallet {
         let spends_revealed_funds = inputs_to_spend.revealed.is_positive();
 
         let ch_memo = Memo::new_message("Change").unwrap();
+        let output_amount =
+            inputs_to_spend.total_amount() - Amount::from(amount) - Amount::from(fee_amount);
+        let output_amount = output_amount.to_u64_checked().ok_or_else(|| {
+            // Techincally, you could split this into multiple outputs, but this is very unlikely to ever be needed in practice
+            anyhow::anyhow!("Calculated change amount exceeds u64::MAX: {output_amount}")
+        })?;
         let change_output = Some(StealthOutputToCreate {
             owner_address: src_address,
-            amount: inputs_to_spend.total_amount()
-                - Amount::from(amount)
-                - Amount::from(fee_amount),
+            amount: output_amount,
             memo: Some(&ch_memo),
         })
-        .filter(|o| o.amount.is_positive());
+        .filter(|o| o.amount > 0);
 
         let memos = outputs
             .iter()
             .enumerate()
             .map(|(i, _)| {
                 memo.as_ref()
-                    .map(|m| format!("{}: {}/{}", m.as_message().unwrap(), i + 1, outputs.len()))
+                    .map(|m| {
+                        format!(
+                            "{}: {}/{}",
+                            m.as_memo_message().unwrap(),
+                            i + 1,
+                            outputs.len()
+                        )
+                    })
                     .map(|m| Memo::new_message(m).unwrap())
             })
             .collect::<Vec<_>>();
@@ -654,5 +666,5 @@ pub struct TransferOutput {
 
 pub struct BalanceStuff {
     pub balances: Vec<BalanceEntry>,
-    pub utxos: Vec<StealthOutputModel>,
+    pub utxos: Vec<StealthOutputInfo>,
 }

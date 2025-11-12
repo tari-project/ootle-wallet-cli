@@ -24,9 +24,11 @@ use tari_engine_types::template_lib_models::ResourceAddress;
 use tari_ootle_common_types::Network;
 use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_wallet_sdk::constants::XTR;
+use tari_ootle_wallet_sdk::models::{AccountWithAddress, EpochBirthday};
 use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
+use tari_template_lib_types::Amount;
 use termimad::crossterm::style::Color;
 use url::Url;
 use zeroize::Zeroizing;
@@ -293,57 +295,95 @@ async fn main() -> Result<(), anyhow::Error> {
                 .context("indexer connection failed")?;
             cli_println!(ANSI_GREEN, "✔️ Connected to indexer");
 
-            let account = wallet.get_account_or_default(account_name.as_deref())?; // Validate account exists
-            let component_address = *account.component_address();
-            spinner(
-                format!(
-                    "Refreshing account {}... This may take a while.",
+            // Get accounts to scan - either the specified account or all accounts
+            let accounts = match account_name.as_deref() {
+                Some(name) => {
+                    vec![wallet.sdk().accounts_api().get_account_by_name(name)?]
+                }
+                None => {
+                    // Scan all accounts
+                    let accounts = wallet.sdk().accounts_api().get_many(0, 100)?;
+                    let mut res = vec![];
+                    for account in accounts {
+                        let address = wallet
+                            .sdk()
+                            .accounts_api()
+                            .get_address_for_account(&account)?;
+                        res.push(AccountWithAddress::new(
+                            account,
+                            address.into_byte_address(),
+                        ));
+                    }
+                    res
+                }
+            };
+
+            if accounts.is_empty() {
+                cli_println!(ANSI_WHITE, "No accounts found to scan");
+                return Ok(());
+            }
+
+            cli_println!(ANSI_BLUE, "Scanning {} account(s)...", accounts.len());
+
+            for account in accounts {
+                let component_address = *account.component_address();
+                cli_println!(
+                    ANSI_BLUE,
+                    "\n--- Scanning account '{}' ({}) ---",
+                    account.account.name.as_deref().unwrap_or("<unnamed>"),
                     component_address
-                ),
-                wallet.refresh_account(component_address),
-                |mut spinner, result| match result {
-                    Ok(true) => {
-                        spinner.stop_and_persist(
-                            "✔️",
-                            format!(
-                                "Account {} refreshed and found balance updates",
-                                component_address
-                            ),
-                        );
-                    }
-                    Ok(false) => {
-                        spinner.stop_and_persist(
-                            "✔️",
-                            format!("Account {} refreshed. No changes.", component_address),
-                        );
-                    }
-                    Err(err) => {
-                        spinner.stop_and_persist(
-                            "❌",
-                            format!(
-                                "Failed to refresh account: {err}. Will display last known balances"
-                            ),
-                        );
-                    }
-                },
-            )
-            .await;
-            spinner(
-                "Waiting for scanning to complete... This may take a while.",
-                wallet.scan_for_utxos(account),
-                |mut spinner, res| match res {
-                    Ok(_) => {
-                        spinner.stop_and_persist("✔️", "UTXO Scanning - Done".to_string());
-                    }
-                    Err(err) => {
-                        spinner.stop_and_persist("❌", format!("UTXO Scanning failed: {err}"));
-                    }
-                },
-            )
-            .await;
+                );
+
+                spinner(
+                    format!(
+                        "Refreshing account {}... This may take a while.",
+                        component_address
+                    ),
+                    wallet.refresh_account(component_address),
+                    |mut spinner, result| match result {
+                        Ok(true) => {
+                            spinner.stop_and_persist(
+                                "✔️",
+                                format!(
+                                    "Account {} refreshed and found balance updates",
+                                    component_address
+                                ),
+                            );
+                        }
+                        Ok(false) => {
+                            spinner.stop_and_persist(
+                                "✔️",
+                                format!("Account {} refreshed. No changes.", component_address),
+                            );
+                        }
+                        Err(err) => {
+                            spinner.stop_and_persist(
+                                "❌",
+                                format!(
+                                    "Failed to refresh account: {err}. Will display last known balances"
+                                ),
+                            );
+                        }
+                    },
+                )
+                .await;
+                spinner(
+                    "Waiting for scanning to complete... This may take a while.",
+                    wallet.scan_for_utxos(account),
+                    |mut spinner, res| match res {
+                        Ok(_) => {
+                            spinner.stop_and_persist("✔️", "UTXO Scanning - Done".to_string());
+                        }
+                        Err(err) => {
+                            spinner.stop_and_persist("❌", format!("UTXO Scanning failed: {err}"));
+                        }
+                    },
+                )
+                .await;
+            }
 
             let events = wallet.drain_events();
-            cli_println!(ANSI_BLUE, "Events:");
+            cli_println!(ANSI_BLUE, "\nEvents:");
             if events.is_empty() {
                 cli_println!(ANSI_WHITE, "No events");
             } else {
@@ -408,10 +448,10 @@ async fn main() -> Result<(), anyhow::Error> {
                 table.set_titles(vec!["Commitment", "Value", "Message"]);
 
                 for utxo in utxos {
-                    let message = utxo.memo.as_ref().and_then(|m| m.as_message());
+                    let message = utxo.memo.as_ref().and_then(|m| m.as_memo_message());
                     table.add_row(table_row![
                         utxo.commitment,
-                        utxo.value.to_decimal_string(resource.divisibility() as u32),
+                        Amount::from(utxo.value).to_decimal_string(resource.divisibility() as u32),
                         message.display()
                     ]);
                 }
@@ -615,7 +655,7 @@ fn init_wallet(common: &CommonArgs) -> anyhow::Result<Wallet> {
         override_keyring_password: Some(common.password.clone()),
     };
 
-    let mut sdk = Sdk::initialize(store, indexer, config)?;
+    let mut sdk = Sdk::initialize(store, indexer, config, EpochBirthday::far_future())?;
     // Load seed words if present. If we don't do this then the wallet will be in read-only mode
     if sdk.load_seed_words()?.is_some() {
         cli_println!(ANSI_BLUE, "✔️ Wallet is in read/write mode");
