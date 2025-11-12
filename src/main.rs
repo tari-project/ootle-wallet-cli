@@ -10,7 +10,7 @@ mod wallet;
 
 use crate::spinner::spinner;
 use crate::table::Table;
-use crate::transfer::{TransferCommand, handle_transfer_command};
+use crate::transfer::{handle_transfer_command, TransferCommand};
 use crate::wallet::{BalanceStuff, Sdk, Wallet};
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -19,13 +19,14 @@ use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_crypto::tari_utilities::hex::from_hex;
 use tari_crypto::tari_utilities::{ByteArray, SafePassword};
 use tari_engine_types::template_lib_models::ResourceAddress;
-use tari_ootle_common_types::Network;
 use tari_ootle_common_types::displayable::Displayable;
+use tari_ootle_common_types::Network;
 use tari_ootle_wallet_sdk::constants::XTR;
 use tari_ootle_wallet_sdk::models::{AccountWithAddress, EpochBirthday};
 use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
+use tari_template_lib_types::Amount;
 use termimad::crossterm::style::Color;
 use url::Url;
 use zeroize::Zeroizing;
@@ -371,7 +372,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     let message = utxo.memo.as_ref().and_then(|m| m.as_memo_message());
                     table.add_row(table_row![
                         utxo.commitment,
-                        utxo.value.to_decimal_string(resource.divisibility() as u32),
+                        Amount::from(utxo.value).to_decimal_string(resource.divisibility() as u32),
                         message.display()
                     ]);
                 }
