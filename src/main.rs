@@ -232,6 +232,24 @@ enum TappletCommand {
         )]
         cache_directory: Box<Path>,
     },
+    /// Run an installed tapplet
+    Run {
+        #[arg(short, long, help = "Name of the tapplet to run")]
+        name: String,
+        #[arg(
+            short,
+            long,
+            help = "Path to the tapplet cache directory",
+            default_value = "data/tapplet_cache"
+        )]
+        cache_directory: Box<Path>,
+        #[arg(
+            short,
+            long,
+            help = "Optional account name to run the tapplet for. If not provided, uses the default account"
+        )]
+        account_name: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -640,6 +658,19 @@ async fn handle_tapplet_command(
             } else {
                 cli_println!(ANSI_WHITE, "Uninstall cancelled");
             }
+        }
+        TappletCommand::Run {
+            name,
+            cache_directory,
+            account_name,
+        } => {
+            tapplets::run_tapplet(
+                wallet,
+                &name,
+                &cache_directory,
+                account_name.as_deref(),
+            )
+            .await?;
         }
     }
 

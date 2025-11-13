@@ -14,10 +14,12 @@ mod default_registries;
 mod fetch;
 mod install;
 mod list;
+mod run;
 mod search;
 
 pub use default_registries::get_default_registries;
 pub use fetch::fetch_registries;
 pub use install::{install_from_local, install_from_registry};
 pub use list::list_installed_tapplets;
+pub use run::run_tapplet;
 pub use search::search_tapplets;
