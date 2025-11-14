@@ -17,6 +17,8 @@ use tokio::process::Command;
 pub async fn run_tapplet(
     wallet: &Wallet,
     name: &str,
+    method: &str,
+    args: HashMap<String, String>,
     cache_directory: &Path,
     account_name: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -43,6 +45,15 @@ pub async fn run_tapplet(
         account.account().name.as_deref().unwrap_or("<unnamed>")
     );
     println!("-----------------------------------");
+
+    run_lua(
+        account.account().name.as_deref().unwrap_or("<unnamed>"),
+        name,
+        method,
+        args,
+        cache_directory.to_path_buf(),
+    )
+    .await?;
 
     // Set up environment variables for the tapplet
 
@@ -88,8 +99,8 @@ impl MinotariTappletApiV1 for OotleApiProvider {
 
 pub async fn run_lua(
     account_name: &str,
-    database_file: &str,
-    password: &str,
+    // database_file: &str,
+    // password: &str,
     name: &str,
     method: &str,
     args: HashMap<String, String>,
@@ -114,7 +125,7 @@ pub async fn run_lua(
 
     // Load the tapplet configuration
     let config = tari_tapplet_lib::parse_tapplet_file(tapplet_path.join("manifest.toml"))?;
-    let lua_path = tapplet_path.join(&config.name).with_extension("lua");
+    let lua_path = tapplet_path.join("main").with_extension("lua");
 
     let mut tapplet = LuaTappletHost::new(config, lua_path, api)?;
 

@@ -27,8 +27,8 @@ use tari_ootle_wallet_sdk::constants::XTR;
 use tari_ootle_wallet_sdk::models::{AccountWithAddress, EpochBirthday};
 use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
-use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 use tari_template_lib_types::Amount;
+use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 use termimad::crossterm::style::Color;
 use url::Url;
 use zeroize::Zeroizing;
@@ -244,11 +244,24 @@ enum TappletCommand {
         )]
         cache_directory: Box<Path>,
         #[arg(
-            short,
             long,
             help = "Optional account name to run the tapplet for. If not provided, uses the default account"
         )]
         account_name: Option<String>,
+        #[arg(
+            short,
+            long,
+            help = "Method to invoke in the tapplet",
+            default_value = "main"
+        )]
+        method: String,
+        #[arg(
+            short,
+            long,
+            help = "Arguments to pass to the tapplet in key=value format",
+            num_args = 0..,
+        )]
+        args: Vec<String>,
     },
 }
 
@@ -663,10 +676,25 @@ async fn handle_tapplet_command(
             name,
             cache_directory,
             account_name,
+            method,
+            args,
         } => {
+            let args_map: std::collections::HashMap<String, String> = args
+                .into_iter()
+                .filter_map(|arg| {
+                    let mut parts = arg.splitn(2, '=');
+                    if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                        Some((key.to_string(), value.to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             tapplets::run_tapplet(
                 wallet,
                 &name,
+                &method,
+                args_map,
                 &cache_directory,
                 account_name.as_deref(),
             )
