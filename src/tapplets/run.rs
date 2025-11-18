@@ -1,7 +1,7 @@
 // Copyright 2025 The Tari Project
 // SPDX-License-Identifier: BSD-3-Clause
 
-use crate::wallet::{self, Sdk, Wallet, create_transfer};
+use crate::wallet::{self, Sdk, Wallet, create_transfer, create_transfer_transaction};
 use anyhow::{Context, anyhow};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use tari_ootle_wallet_sdk::apis::transaction;
 use tari_ootle_wallet_sdk::constants::NFT_FAUCET_RESOURCE_ADDRESS;
 use tari_ootle_wallet_sdk::{OotleAddress, WalletSdk};
 use tari_tapplet_lib::LuaTappletHost;
@@ -118,6 +119,14 @@ impl MinotariTappletApiV1 for OotleApiProvider {
             &[0],
             Some(&message),
         )?;
+        let unsigned_tx = create_transfer_transaction(&w, w.network(), &transfer)?;
+
+        let signed_tx = w.local_signer_api().sign(
+            transfer.required_signer_key_branch,
+            transfer.required_signer_key_id,
+            unsigned_tx.authorized_sealed_signer().build(),
+        )?;
+
         todo!()
     }
     async fn load_data_entries(&self, slot: &str) -> Result<Vec<String>, anyhow::Error> {

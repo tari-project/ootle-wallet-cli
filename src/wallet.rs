@@ -420,54 +420,7 @@ impl Wallet {
         &self,
         transfer: &TransferOutput,
     ) -> anyhow::Result<UnsignedTransaction> {
-        let utxo_inputs = transfer
-            .statement
-            .inputs_statement
-            .inputs
-            .iter()
-            .map(|i| UtxoAddress::new(transfer.resource_address, i.commitment.into()))
-            .map(SubstateRequirement::unversioned);
-
-        let revealed_input_amount = transfer.statement.inputs_statement.revealed_amount;
-        let statement = &transfer.statement;
-
-        let maybe_account_input = revealed_input_amount
-            .is_positive()
-            .then_some(transfer.account_component_address);
-        let maybe_vault_input = maybe_account_input
-            .as_ref()
-            .and_then(|_| {
-                self.sdk()
-                    .accounts_api()
-                    .get_vault_by_resource(&transfer.account_component_address, &XTR)
-                    .optional()
-                    .transpose()
-            })
-            .transpose()?;
-
-        let transaction = Transaction::builder()
-            .for_network(self.network().as_byte())
-            .with_fee_instructions_builder(|builder| {
-                if revealed_input_amount.is_positive() {
-                    builder
-                        .call_method(
-                            transfer.account_component_address,
-                            "withdraw",
-                            args![XTR, statement.inputs_statement.revealed_amount],
-                        )
-                        .put_last_instruction_output_on_workspace("fee_input_bucket")
-                        .pay_fee_stealth_with_input_bucket(statement.clone(), "fee_input_bucket")
-                } else {
-                    builder.pay_fee_stealth(statement.clone())
-                }
-            })
-            .with_inputs(utxo_inputs)
-            .with_inputs(maybe_account_input.map(Into::into))
-            .with_inputs(maybe_vault_input.map(|v| v.id.into()))
-            // TODO: remove the need to add this input
-            .add_input(XTR)
-            .build_unsigned_transaction();
-        Ok(transaction)
+        create_transfer_transaction(self.sdk(), self.network(), transfer)
     }
 
     pub async fn submit_transaction(
@@ -681,4 +634,58 @@ pub fn create_transfer(
         required_signer_key_id: key_id,
         account_component_address: *src_account.component_address(),
     })
+}
+
+pub fn create_transfer_transaction(
+    sdk: &Sdk,
+    network: Network,
+    transfer: &TransferOutput,
+) -> anyhow::Result<UnsignedTransaction> {
+    let utxo_inputs = transfer
+        .statement
+        .inputs_statement
+        .inputs
+        .iter()
+        .map(|i| UtxoAddress::new(transfer.resource_address, i.commitment.into()))
+        .map(SubstateRequirement::unversioned);
+
+    let revealed_input_amount = transfer.statement.inputs_statement.revealed_amount;
+    let statement = &transfer.statement;
+
+    let maybe_account_input = revealed_input_amount
+        .is_positive()
+        .then_some(transfer.account_component_address);
+    let maybe_vault_input = maybe_account_input
+        .as_ref()
+        .and_then(|_| {
+            sdk.accounts_api()
+                .get_vault_by_resource(&transfer.account_component_address, &XTR)
+                .optional()
+                .transpose()
+        })
+        .transpose()?;
+
+    let transaction = Transaction::builder()
+        .for_network(network.as_byte())
+        .with_fee_instructions_builder(|builder| {
+            if revealed_input_amount.is_positive() {
+                builder
+                    .call_method(
+                        transfer.account_component_address,
+                        "withdraw",
+                        args![XTR, statement.inputs_statement.revealed_amount],
+                    )
+                    .put_last_instruction_output_on_workspace("fee_input_bucket")
+                    .pay_fee_stealth_with_input_bucket(statement.clone(), "fee_input_bucket")
+            } else {
+                builder.pay_fee_stealth(statement.clone())
+            }
+        })
+        .with_inputs(utxo_inputs)
+        .with_inputs(maybe_account_input.map(Into::into))
+        .with_inputs(maybe_vault_input.map(|v| v.id.into()))
+        // TODO: remove the need to add this input
+        .add_input(XTR)
+        .build_unsigned_transaction();
+    Ok(transaction)
 }
