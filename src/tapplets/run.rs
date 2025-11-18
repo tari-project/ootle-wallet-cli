@@ -1,21 +1,25 @@
 // Copyright 2025 The Tari Project
 // SPDX-License-Identifier: BSD-3-Clause
 
-use crate::wallet::Wallet;
+use crate::wallet::{self, Sdk, Wallet, create_transfer};
 use anyhow::{Context, anyhow};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
+use tari_ootle_wallet_sdk::constants::NFT_FAUCET_RESOURCE_ADDRESS;
+use tari_ootle_wallet_sdk::{OotleAddress, WalletSdk};
 use tari_tapplet_lib::LuaTappletHost;
 use tari_tapplet_lib::host::MinotariTappletApiV1;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::RwLock;
 
 /// Run an installed tapplet
 pub async fn run_tapplet(
-    wallet: &Wallet,
+    wallet: &mut Wallet,
     name: &str,
     method: &str,
     args: HashMap<String, String>,
@@ -48,6 +52,7 @@ pub async fn run_tapplet(
 
     run_lua(
         account.account().name.as_deref().unwrap_or("<unnamed>"),
+        wallet.sdk().clone(),
         name,
         method,
         args,
@@ -74,22 +79,45 @@ pub async fn run_tapplet(
 }
 
 #[derive(Clone)]
-struct OotleApiProvider {}
+struct OotleApiProvider {
+    wallet: Arc<RwLock<Sdk>>,
+    tapplet_data_address: OotleAddress,
+    fee_amount: u64,
+}
 
 impl OotleApiProvider {
-    pub async fn try_create(// account_name: String,
-        // config: &TappletManifest,
-        // database_file: PathBuf,
-        // password: String,
+    pub async fn try_create(
+        wallet: Sdk,
+        tapplet_data_address: OotleAddress,
+        fee_amount: u64,
     ) -> Result<Self, anyhow::Error> {
         // Initialize the API provider here
-        Ok(Self {})
+        Ok(Self {
+            wallet: Arc::new(RwLock::new(wallet)),
+            tapplet_data_address,
+            fee_amount,
+        })
     }
 }
 
 #[async_trait]
 impl MinotariTappletApiV1 for OotleApiProvider {
     async fn append_data(&self, slot: &str, value: &str) -> Result<(), anyhow::Error> {
+        let mut w = self.wallet.write().await;
+        let message = format!(
+            "t:\"{}\",\"{}\"",
+            slot.replace("\"", "\"\""),
+            value.replace("\"", "\"\"")
+        );
+        let transfer = create_transfer(
+            &w,
+            None,
+            &self.tapplet_data_address,
+            self.fee_amount,
+            0,
+            &[0],
+            Some(&message),
+        )?;
         todo!()
     }
     async fn load_data_entries(&self, slot: &str) -> Result<Vec<String>, anyhow::Error> {
@@ -97,10 +125,21 @@ impl MinotariTappletApiV1 for OotleApiProvider {
     }
 }
 
+fn create_tapplet_specific_address(
+    wallet: &Sdk,
+    config: &tari_tapplet_lib::TappletConfig,
+) -> OotleAddress {
+    // For simplicity, we return a fixed address here.
+    // In a real implementation, you would derive this from the wallet and tapplet config.
+    // NFT_FAUCET_RESOURCE_ADDRESS.clone()
+    todo!()
+}
+
 pub async fn run_lua(
     account_name: &str,
     // database_file: &str,
     // password: &str,
+    wallet: Sdk,
     name: &str,
     method: &str,
     args: HashMap<String, String>,
@@ -115,13 +154,13 @@ pub async fn run_lua(
     }
     let config = tari_tapplet_lib::parse_tapplet_file(tapplet_path.join("manifest.toml"))?;
 
-    let api = OotleApiProvider::try_create(
-        // account_name.to_string(),
-        // &config,
-        // database_file.into(),
-        // password.to_string(),
-    )
-    .await?;
+    let tapplet_name = format!("tapplet_{}", config.public_key);
+    let tapplet_address = wallet
+        .accounts_api()
+        .get_account_by_name(&tapplet_name)?
+        .address;
+
+    let api = OotleApiProvider::try_create(wallet, tapplet_address, 1).await?;
 
     // Load the tapplet configuration
     let config = tari_tapplet_lib::parse_tapplet_file(tapplet_path.join("manifest.toml"))?;

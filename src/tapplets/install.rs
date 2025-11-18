@@ -205,7 +205,7 @@ pub async fn install_from_local(
         .map_err(|e| anyhow::anyhow!(e))?;
 
     let label = format!("tapplet_view_key_{}", manifest.name);
-    let new_account_name = format!("tapplet_{}", manifest.name);
+    let new_account_name = format!("tapplet_{}", manifest.public_key);
     let new_key_id =
         wallet
             .sdk()
