@@ -1,9 +1,14 @@
 // Copyright 2025 The Tari Project
 // SPDX-License-Identifier: BSD-3-Clause
 
-use crate::wallet::{self, Sdk, Wallet, create_transfer, create_transfer_transaction};
+use crate::wallet::{
+    self, Sdk, Wallet, create_transfer, create_transfer_transaction, submit_transaction,
+    wait_for_transaction_to_finalize,
+};
 use anyhow::{Context, anyhow};
 use async_trait::async_trait;
+use dialoguer::{Input, Select};
+use log::info;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -104,6 +109,33 @@ impl OotleApiProvider {
 #[async_trait]
 impl MinotariTappletApiV1 for OotleApiProvider {
     async fn append_data(&self, slot: &str, value: &str) -> Result<(), anyhow::Error> {
+        let options = vec![
+            "Allow this time",
+            "Allow and remember my choice for this tapplet (Not implemented)",
+            "Deny",
+        ];
+        let selection = Select::new()
+        .with_prompt("Tapplet is trying to save data in a slot (by sending a transaction to itself). Allow?")
+        .items(&options)
+        .default(0)
+        .interact()
+        .unwrap();
+
+        if selection == 2 {
+            return Err(anyhow::anyhow!("User denied data append operation"));
+        }
+        if selection == 1 {
+            return Err(anyhow::anyhow!("Remembering choice not implemented yet"));
+        }
+
+        let fees = Input::new()
+            .with_prompt("Enter fee amount for the data append transaction")
+            .default(self.fee_amount)
+            .interact_text()
+            .unwrap();
+
+        let fee_amount: u64 = fees;
+
         let mut w = self.wallet.write().await;
         let message = format!(
             "t:\"{}\",\"{}\"",
@@ -114,7 +146,7 @@ impl MinotariTappletApiV1 for OotleApiProvider {
             &w,
             None,
             &self.tapplet_data_address,
-            self.fee_amount,
+            fee_amount,
             0,
             &[0],
             Some(&message),
@@ -127,7 +159,11 @@ impl MinotariTappletApiV1 for OotleApiProvider {
             unsigned_tx.authorized_sealed_signer().build(),
         )?;
 
-        todo!()
+        let id = submit_transaction(&w, signed_tx, None, Some(transfer.lock_id)).await?;
+        info!("Appended data to slot '{}' in transaction {}", slot, id);
+
+        wait_for_transaction_to_finalize(&w, id).await?;
+        Ok(())
     }
     async fn load_data_entries(&self, slot: &str) -> Result<Vec<String>, anyhow::Error> {
         todo!()

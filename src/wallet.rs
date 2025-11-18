@@ -429,20 +429,7 @@ impl Wallet {
         new_account_data: Option<NewAccountData>,
         lock_id: Option<WalletLockId>,
     ) -> anyhow::Result<WalletTransaction> {
-        let id = self.sdk.transaction_api().insert_new_transaction(
-            transaction,
-            new_account_data,
-            false,
-        )?;
-        if let Some(lock_id) = lock_id {
-            self.sdk
-                .transaction_api()
-                .locks_set_transaction_id(lock_id, id)?;
-        }
-        if !self.sdk.transaction_api().submit_transaction(id).await? {
-            return Err(anyhow!("Failed to submit transaction {}", id));
-        }
-
+        let id = submit_transaction(&self.sdk(), transaction, new_account_data, lock_id).await?;
         self.wait_for_transaction_to_finalize(id).await
     }
 
@@ -450,36 +437,7 @@ impl Wallet {
         &self,
         id: TransactionId,
     ) -> anyhow::Result<WalletTransaction> {
-        loop {
-            let maybe_tx = self
-                .sdk()
-                .transaction_api()
-                .check_and_store_finalized_transaction(id)
-                .await?;
-            match maybe_tx {
-                Some(tx) => {
-                    return if matches!(tx.status, TransactionStatus::Accepted) {
-                        info!("Transaction {} was accepted", id);
-                        Ok(tx)
-                    } else {
-                        Err(anyhow!(
-                            "Transaction {} failed: {:?} {} {}",
-                            id,
-                            tx.status,
-                            tx.invalid_reason.as_deref().unwrap_or(""),
-                            tx.finalize
-                                .as_ref()
-                                .and_then(|f| f.result.any_reject())
-                                .display()
-                        ))
-                    };
-                }
-                None => {
-                    info!("Transaction {} is still pending...", id);
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
-            }
-        }
+        wait_for_transaction_to_finalize(&self.sdk, id).await
     }
 }
 
@@ -688,4 +646,68 @@ pub fn create_transfer_transaction(
         .add_input(XTR)
         .build_unsigned_transaction();
     Ok(transaction)
+}
+
+pub async fn submit_transaction(
+    sdk: &Sdk,
+    transaction: Transaction,
+    new_account_data: Option<NewAccountData>,
+    lock_id: Option<WalletLockId>,
+) -> anyhow::Result<TransactionId> {
+    let id = sdk
+        .transaction_api()
+        .insert_new_transaction(transaction, new_account_data, false)?;
+    if let Some(lock_id) = lock_id {
+        sdk.transaction_api()
+            .locks_set_transaction_id(lock_id, id)?;
+    }
+    if !sdk.transaction_api().submit_transaction(id).await? {
+        return Err(anyhow!("Failed to submit transaction {}", id));
+    }
+
+    Ok(id)
+
+    // self.wait_for_transaction_to_finalize(id).await
+}
+
+pub async fn wait_for_transaction_to_finalize(
+    sdk: &Sdk,
+    id: TransactionId,
+    // cancellation_token: Option<Notify<()>>,
+) -> anyhow::Result<WalletTransaction> {
+    loop {
+        // TODO: add cancelation support
+        // if let Some(token) = &cancellation_token {
+        //     if token.
+        //         return Err(anyhow!("Transaction finalization wait was cancelled"));
+        //     }
+        // }
+        let maybe_tx = sdk
+            .transaction_api()
+            .check_and_store_finalized_transaction(id)
+            .await?;
+        match maybe_tx {
+            Some(tx) => {
+                return if matches!(tx.status, TransactionStatus::Accepted) {
+                    info!("Transaction {} was accepted", id);
+                    Ok(tx)
+                } else {
+                    Err(anyhow!(
+                        "Transaction {} failed: {:?} {} {}",
+                        id,
+                        tx.status,
+                        tx.invalid_reason.as_deref().unwrap_or(""),
+                        tx.finalize
+                            .as_ref()
+                            .and_then(|f| f.result.any_reject())
+                            .display()
+                    ))
+                };
+            }
+            None => {
+                info!("Transaction {} is still pending...", id);
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
+    }
 }
