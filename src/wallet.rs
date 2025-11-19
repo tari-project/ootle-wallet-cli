@@ -429,7 +429,7 @@ impl Wallet {
         new_account_data: Option<NewAccountData>,
         lock_id: Option<WalletLockId>,
     ) -> anyhow::Result<WalletTransaction> {
-        let id = submit_transaction(&self.sdk(), transaction, new_account_data, lock_id).await?;
+        let id = submit_transaction(self.sdk(), transaction, new_account_data, lock_id).await?;
         self.wait_for_transaction_to_finalize(id).await
     }
 
@@ -543,7 +543,7 @@ pub fn create_transfer(
         .zip(&memos)
         .map(|(&amt, memo)| StealthOutputToCreate {
             owner_address: dest_address.clone(),
-            amount: amt.into(),
+            amount: amt,
             memo: memo.as_ref(),
         });
 

@@ -14,18 +14,18 @@ pub async fn list_installed_tapplets(cache_directory: &Path) -> anyhow::Result<V
 
     let mut tapplets = Vec::new();
 
-    for entry in std::fs::read_dir(&installed_dir)
-        .context(format!("Failed to read installed directory: {:?}", installed_dir))?
-    {
+    for entry in std::fs::read_dir(&installed_dir).context(format!(
+        "Failed to read installed directory: {:?}",
+        installed_dir
+    ))? {
         let entry = entry?;
         let path = entry.path();
 
-        if path.is_dir() {
-            if let Some(name) = path.file_name() {
-                if let Some(name_str) = name.to_str() {
-                    tapplets.push(name_str.to_string());
-                }
-            }
+        if path.is_dir()
+            && let Some(name) = path.file_name()
+            && let Some(name_str) = name.to_str()
+        {
+            tapplets.push(name_str.to_string());
         }
     }
 

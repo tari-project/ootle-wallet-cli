@@ -2,26 +2,20 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use crate::wallet::{
-    self, Sdk, Wallet, create_transfer, create_transfer_transaction, submit_transaction,
+    Sdk, Wallet, create_transfer, create_transfer_transaction, submit_transaction,
     wait_for_transaction_to_finalize,
 };
-use anyhow::{Context, anyhow};
 use async_trait::async_trait;
 use dialoguer::{Input, Select};
 use log::info;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Arc;
 use tari_engine_types::template_lib_models::ComponentAddress;
-use tari_ootle_wallet_sdk::apis::transaction;
-use tari_ootle_wallet_sdk::constants::NFT_FAUCET_RESOURCE_ADDRESS;
-use tari_ootle_wallet_sdk::{OotleAddress, WalletSdk};
+use tari_ootle_wallet_sdk::OotleAddress;
 use tari_tapplet_lib::LuaTappletHost;
 use tari_tapplet_lib::host::MinotariTappletApiV1;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 use tokio::sync::RwLock;
 
 /// Run an installed tapplet
@@ -58,7 +52,7 @@ pub async fn run_tapplet(
     println!("-----------------------------------");
 
     run_lua(
-        account.account().name.as_deref().unwrap_or("<unnamed>"),
+        // account.account().name.as_deref().unwrap_or("<unnamed>"),
         wallet.sdk().clone(),
         name,
         method,
@@ -140,7 +134,7 @@ impl MinotariTappletApiV1 for OotleApiProvider {
 
         let fee_amount: u64 = fees;
 
-        let mut w = self.wallet.write().await;
+        let w = self.wallet.read().await;
         let message = format!(
             "t:\"{}\",\"{}\"",
             slot.replace("\"", "\"\""),
@@ -196,9 +190,6 @@ impl MinotariTappletApiV1 for OotleApiProvider {
 }
 
 pub async fn run_lua(
-    account_name: &str,
-    // database_file: &str,
-    // password: &str,
     wallet: Sdk,
     name: &str,
     method: &str,
@@ -221,7 +212,7 @@ pub async fn run_lua(
         wallet,
         tapplet_account.address.clone(),
         1,
-        tapplet_account.component_address().clone(),
+        *tapplet_account.component_address(),
     )
     .await?;
 
@@ -229,7 +220,7 @@ pub async fn run_lua(
     let config = tari_tapplet_lib::parse_tapplet_file(tapplet_path.join("manifest.toml"))?;
     let lua_path = tapplet_path.join("main").with_extension("lua");
 
-    let mut tapplet = LuaTappletHost::new(config, lua_path, api)?;
+    let tapplet = LuaTappletHost::new(config, lua_path, api)?;
 
     println!("Running method '{}' on tapplet '{}'", method, name);
 

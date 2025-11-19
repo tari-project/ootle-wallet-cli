@@ -14,20 +14,16 @@ use tari_crypto::keys::SecretKey;
 use tari_crypto::ristretto::RistrettoPublicKey;
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_crypto::tari_utilities::ByteArray;
-use tari_engine_types::template_lib_models::ComponentAddress;
 use tari_ootle_common_types::Epoch;
-use tari_ootle_wallet_sdk::models::EpochBirthday;
 use tari_ootle_wallet_sdk::models::KeyIdOrPublicKey;
 use tari_ootle_wallet_sdk::models::KeyType;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 
 /// Install a tapplet from a registry
 pub async fn install_from_registry(
-    wallet: &mut Wallet,
     registry: Option<String>,
     name: &str,
     cache_directory: &Path,
-    account_name: Option<&str>,
 ) -> anyhow::Result<()> {
     let default_registries = get_default_registries();
 
@@ -36,10 +32,10 @@ pub async fn install_from_registry(
 
     for (reg_name, _url) in default_registries {
         // Skip if specific registry requested and this isn't it
-        if let Some(ref requested_registry) = registry {
-            if reg_name != requested_registry {
-                continue;
-            }
+        if let Some(ref requested_registry) = registry
+            && reg_name != requested_registry
+        {
+            continue;
         }
 
         let registry_dir = cache_directory.join("registries").join(reg_name);
@@ -58,11 +54,11 @@ pub async fn install_from_registry(
                 let manifest_path = path.join("manifest.toml");
                 if manifest_path.exists() {
                     let manifest_content = std::fs::read_to_string(&manifest_path)?;
-                    if let Ok(manifest) = toml::from_str::<TappletManifest>(&manifest_content) {
-                        if manifest.name == name {
-                            found_manifest = Some((reg_name.to_string(), manifest, path));
-                            break;
-                        }
+                    if let Ok(manifest) = toml::from_str::<TappletManifest>(&manifest_content)
+                        && manifest.name == name
+                    {
+                        found_manifest = Some((reg_name.to_string(), manifest, path));
+                        break;
                     }
                 }
             }
@@ -229,18 +225,16 @@ pub async fn install_from_local(
         .derive_account_address_from_public_key(&public_view_key);
     // let spend_key =
 
-    let tapplet_account = wallet.sdk().accounts_api().add_account(
+    wallet.sdk().accounts_api().add_account(
         Some(&new_account_name),
         &new_account_address,
         new_key_id,
-        KeyIdOrPublicKey::PublicKey(public_view_key.clone()),
+        KeyIdOrPublicKey::PublicKey(public_view_key),
         Epoch::zero(),
         false,
         false,
     )?;
-    // todo!();
-    // Create the child view key.
-    let child_view_key = println!(
+    println!(
         "\n✓ Tapplet '{}' v{} installed successfully",
         manifest.name, manifest.version
     );

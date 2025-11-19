@@ -4192,6 +4192,7 @@ checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 [[package]]
 name = "tari-tapplet-lib"
 version = "0.1.0"
+source = "git+https://github.com/tari-project/tari-tapplet-lib.git#cb55a685f3bc843b1e29aac38b067d811d354caf"
 dependencies = [
  "anyhow",
  "async-trait",

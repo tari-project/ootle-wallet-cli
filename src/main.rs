@@ -9,7 +9,6 @@ mod tapplets;
 mod transfer;
 mod wallet;
 
-use crate::models::BalanceEntry;
 use crate::spinner::spinner;
 use crate::table::Table;
 use crate::transfer::{TransferCommand, handle_transfer_command};
@@ -628,14 +627,7 @@ async fn handle_tapplet_command(
             account_name,
         } => {
             if let Some(tapplet_name) = name {
-                tapplets::install_from_registry(
-                    wallet,
-                    registry,
-                    &tapplet_name,
-                    &cache_directory,
-                    account_name.as_deref(),
-                )
-                .await?;
+                tapplets::install_from_registry(registry, &tapplet_name, &cache_directory).await?;
             } else if let Some(tapplet_path) = path {
                 tapplets::install_from_local(
                     wallet,
