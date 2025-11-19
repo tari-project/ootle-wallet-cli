@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use crate::models::BalanceEntry;
-use anyhow::anyhow;
 use anyhow::Context;
+use anyhow::anyhow;
 use log::*;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -12,9 +12,9 @@ use tari_engine_types::template_lib_models::{
     ComponentAddress, ResourceAddress, StealthTransferStatement, UtxoAddress,
 };
 use tari_engine_types::{FromByteType, ToByteType};
+use tari_ootle_common_types::Epoch;
 use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_common_types::optional::Optional;
-use tari_ootle_common_types::Epoch;
 use tari_ootle_common_types::{Network, SubstateRequirement};
 use tari_ootle_wallet_sdk::apis::confidential_transfer::UtxoInputSelection;
 use tari_ootle_wallet_sdk::apis::stealth_outputs::TransferStatementParams;
@@ -38,7 +38,7 @@ use tari_ootle_wallet_sdk_services::utxo_scanner::{UtxoRecovery, UtxoScanner};
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 use tari_template_lib_types::{Amount, ResourceType};
-use tari_transaction::{args, Transaction, TransactionId, UnsignedTransaction};
+use tari_transaction::{Transaction, TransactionId, UnsignedTransaction, args};
 use tokio::sync::broadcast;
 
 pub type Sdk = WalletSdk<SqliteWalletStore, IndexerRestApiNetworkInterface>;
@@ -389,139 +389,15 @@ impl Wallet {
         outputs: &[u64],
         message: Option<&str>,
     ) -> anyhow::Result<TransferOutput> {
-        assert_eq!(
-            outputs.iter().sum::<u64>(),
+        create_transfer(
+            self.sdk(),
+            src_account,
+            dest_address,
+            fee_amount,
             amount,
-            "Outputs do not sum to input amount"
-        );
-        let src_account = match src_account {
-            Some(name) => self.sdk().accounts_api().get_account_by_name(name).unwrap(),
-            None => self.sdk().accounts_api().get_default().unwrap(),
-        };
-        let spend_key_id = src_account.owner_key_id().ok_or_else(|| {
-            anyhow::anyhow!("Source account does not have the required spend key")
-        })?;
-        let view_key_id = src_account.view_only_key_id();
-
-        let outputs_api = self.sdk().stealth_outputs_api();
-
-        let lock = self
-            .sdk()
-            .locks_api()
-            .create_lock_with_timeout(Duration::from_secs(100))?;
-        let inputs_to_spend = self.sdk().stealth_transfer_api().lock_inputs_for_transfer(
-            lock.id(),
-            src_account.component_address(),
-            XTR,
-            (amount + fee_amount).into(),
-            UtxoInputSelection::PreferRevealed,
-        )?;
-
-        let dest_address: RistrettoOotleAddress =
-            dest_address.try_from_byte_type().map_err(|err| {
-                anyhow!("Destination address is not a Ristretto Ootle address: {err}")
-            })?;
-
-        let memo = message
-            .map(|s| {
-                Memo::new_message(s).ok_or_else(|| {
-                    anyhow::anyhow!("Failed to create memo from message. Message too long?")
-                })
-            })
-            .transpose()?;
-
-        let src_address = src_account.address.try_from_byte_type()?;
-        let spends_revealed_funds = inputs_to_spend.revealed.is_positive();
-
-        let ch_memo = Memo::new_message("Change").unwrap();
-        let output_amount =
-            inputs_to_spend.total_amount() - Amount::from(amount) - Amount::from(fee_amount);
-        let output_amount = output_amount.to_u64_checked().ok_or_else(|| {
-            // Techincally, you could split this into multiple outputs, but this is very unlikely to ever be needed in practice
-            anyhow::anyhow!("Calculated change amount exceeds u64::MAX: {output_amount}")
-        })?;
-        let change_output = Some(StealthOutputToCreate {
-            owner_address: src_address,
-            amount: output_amount,
-            memo: Some(&ch_memo),
-        })
-        .filter(|o| o.amount > 0);
-
-        let memos = outputs
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
-                memo.as_ref()
-                    .map(|m| {
-                        format!(
-                            "{}: {}/{}",
-                            m.as_memo_message().unwrap(),
-                            i + 1,
-                            outputs.len()
-                        )
-                    })
-                    .map(|m| Memo::new_message(m).unwrap())
-            })
-            .collect::<Vec<_>>();
-
-        let transfer_outputs =
-            outputs
-                .iter()
-                .zip(&memos)
-                .map(|(&amt, memo)| StealthOutputToCreate {
-                    owner_address: dest_address.clone(),
-                    amount: amt.into(),
-                    memo: memo.as_ref(),
-                });
-
-        let (key_branch, key_id, public_key) = if spends_revealed_funds {
-            (
-                KeyBranch::Account,
-                src_account
-                    .owner_key_id()
-                    .expect("Source account does not have the required spend key"),
-                *src_account.owner_public_key(),
-            )
-        } else {
-            // If we are not spending revealed funds, we can use the nonce key for signing
-            let nonce_key = self
-                .sdk
-                .key_manager_api()
-                .next_public_key(KeyBranch::Nonce)?;
-
-            (
-                KeyBranch::Nonce,
-                nonce_key.key_id,
-                nonce_key.public_key.to_byte_type(),
-            )
-        };
-
-        let params = TransferStatementParams {
-            spend_key_branch: KeyBranch::Account,
-            spend_key_id,
-            view_only_key_id: view_key_id,
-            resource_address: &XTR,
-            resource_view_key: None,
-            inputs: &inputs_to_spend.inputs,
-            input_revealed_amount: inputs_to_spend.revealed,
-            outputs: transfer_outputs.chain(change_output),
-            // TODO: this only works with XTR
-            output_revealed_amount: fee_amount.into(),
-            required_signer: public_key,
-        };
-
-        let transfer = outputs_api.generate_transfer_statement(params)?;
-
-        let lock_id = lock.keep_locked();
-
-        Ok(TransferOutput {
-            statement: transfer,
-            resource_address: XTR,
-            lock_id,
-            required_signer_key_branch: key_branch,
-            required_signer_key_id: key_id,
-            account_component_address: *src_account.component_address(),
-        })
+            outputs,
+            message,
+        )
     }
 
     pub fn sign_transaction(
@@ -544,54 +420,7 @@ impl Wallet {
         &self,
         transfer: &TransferOutput,
     ) -> anyhow::Result<UnsignedTransaction> {
-        let utxo_inputs = transfer
-            .statement
-            .inputs_statement
-            .inputs
-            .iter()
-            .map(|i| UtxoAddress::new(transfer.resource_address, i.commitment.into()))
-            .map(SubstateRequirement::unversioned);
-
-        let revealed_input_amount = transfer.statement.inputs_statement.revealed_amount;
-        let statement = &transfer.statement;
-
-        let maybe_account_input = revealed_input_amount
-            .is_positive()
-            .then_some(transfer.account_component_address);
-        let maybe_vault_input = maybe_account_input
-            .as_ref()
-            .and_then(|_| {
-                self.sdk()
-                    .accounts_api()
-                    .get_vault_by_resource(&transfer.account_component_address, &XTR)
-                    .optional()
-                    .transpose()
-            })
-            .transpose()?;
-
-        let transaction = Transaction::builder()
-            .for_network(self.network().as_byte())
-            .with_fee_instructions_builder(|builder| {
-                if revealed_input_amount.is_positive() {
-                    builder
-                        .call_method(
-                            transfer.account_component_address,
-                            "withdraw",
-                            args![XTR, statement.inputs_statement.revealed_amount],
-                        )
-                        .put_last_instruction_output_on_workspace("fee_input_bucket")
-                        .pay_fee_stealth_with_input_bucket(statement.clone(), "fee_input_bucket")
-                } else {
-                    builder.pay_fee_stealth(statement.clone())
-                }
-            })
-            .with_inputs(utxo_inputs)
-            .with_inputs(maybe_account_input.map(Into::into))
-            .with_inputs(maybe_vault_input.map(|v| v.id.into()))
-            // TODO: remove the need to add this input
-            .add_input(XTR)
-            .build_unsigned_transaction();
-        Ok(transaction)
+        create_transfer_transaction(self.sdk(), self.network(), transfer)
     }
 
     pub async fn submit_transaction(
@@ -600,20 +429,7 @@ impl Wallet {
         new_account_data: Option<NewAccountData>,
         lock_id: Option<WalletLockId>,
     ) -> anyhow::Result<WalletTransaction> {
-        let id = self.sdk.transaction_api().insert_new_transaction(
-            transaction,
-            new_account_data,
-            false,
-        )?;
-        if let Some(lock_id) = lock_id {
-            self.sdk
-                .transaction_api()
-                .locks_set_transaction_id(lock_id, id)?;
-        }
-        if !self.sdk.transaction_api().submit_transaction(id).await? {
-            return Err(anyhow!("Failed to submit transaction {}", id));
-        }
-
+        let id = submit_transaction(&self.sdk(), transaction, new_account_data, lock_id).await?;
         self.wait_for_transaction_to_finalize(id).await
     }
 
@@ -621,36 +437,7 @@ impl Wallet {
         &self,
         id: TransactionId,
     ) -> anyhow::Result<WalletTransaction> {
-        loop {
-            let maybe_tx = self
-                .sdk()
-                .transaction_api()
-                .check_and_store_finalized_transaction(id)
-                .await?;
-            match maybe_tx {
-                Some(tx) => {
-                    return if matches!(tx.status, TransactionStatus::Accepted) {
-                        info!("Transaction {} was accepted", id);
-                        Ok(tx)
-                    } else {
-                        Err(anyhow!(
-                            "Transaction {} failed: {:?} {} {}",
-                            id,
-                            tx.status,
-                            tx.invalid_reason.as_deref().unwrap_or(""),
-                            tx.finalize
-                                .as_ref()
-                                .and_then(|f| f.result.any_reject())
-                                .display()
-                        ))
-                    };
-                }
-                None => {
-                    info!("Transaction {} is still pending...", id);
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
-            }
-        }
+        wait_for_transaction_to_finalize(&self.sdk, id).await
     }
 }
 
@@ -667,4 +454,260 @@ pub struct TransferOutput {
 pub struct BalanceStuff {
     pub balances: Vec<BalanceEntry>,
     pub utxos: Vec<StealthOutputInfo>,
+}
+
+pub fn create_transfer(
+    sdk: &Sdk,
+    src_account: Option<&str>,
+    dest_address: &OotleAddress,
+    fee_amount: u64,
+    amount: u64,
+    outputs: &[u64],
+    message: Option<&str>,
+) -> anyhow::Result<TransferOutput> {
+    assert_eq!(
+        outputs.iter().sum::<u64>(),
+        amount,
+        "Outputs do not sum to input amount"
+    );
+    let src_account = match src_account {
+        Some(name) => sdk.accounts_api().get_account_by_name(name).unwrap(),
+        None => sdk.accounts_api().get_default().unwrap(),
+    };
+    let spend_key_id = src_account
+        .owner_key_id()
+        .ok_or_else(|| anyhow::anyhow!("Source account does not have the required spend key"))?;
+    let view_key_id = src_account.view_only_key_id();
+
+    let outputs_api = sdk.stealth_outputs_api();
+
+    let lock = sdk
+        .locks_api()
+        .create_lock_with_timeout(Duration::from_secs(100))?;
+    let inputs_to_spend = sdk.stealth_transfer_api().lock_inputs_for_transfer(
+        lock.id(),
+        src_account.component_address(),
+        XTR,
+        (amount + fee_amount).into(),
+        UtxoInputSelection::PreferRevealed,
+    )?;
+
+    let dest_address: RistrettoOotleAddress = dest_address
+        .try_from_byte_type()
+        .map_err(|err| anyhow!("Destination address is not a Ristretto Ootle address: {err}"))?;
+
+    let memo = message
+        .map(|s| {
+            Memo::new_message(s).ok_or_else(|| {
+                anyhow::anyhow!("Failed to create memo from message. Message too long?")
+            })
+        })
+        .transpose()?;
+
+    let src_address = src_account.address.try_from_byte_type()?;
+    let spends_revealed_funds = inputs_to_spend.revealed.is_positive();
+
+    let ch_memo = Memo::new_message("Change").unwrap();
+    let output_amount =
+        inputs_to_spend.total_amount() - Amount::from(amount) - Amount::from(fee_amount);
+    let output_amount = output_amount.to_u64_checked().ok_or_else(|| {
+        // Techincally, you could split this into multiple outputs, but this is very unlikely to ever be needed in practice
+        anyhow::anyhow!("Calculated change amount exceeds u64::MAX: {output_amount}")
+    })?;
+    let change_output = Some(StealthOutputToCreate {
+        owner_address: src_address,
+        amount: output_amount,
+        memo: Some(&ch_memo),
+    })
+    .filter(|o| o.amount > 0);
+
+    let memos = outputs
+        .iter()
+        .enumerate()
+        .map(|(i, _)| {
+            memo.as_ref()
+                .map(|m| {
+                    format!(
+                        "{}: {}/{}",
+                        m.as_memo_message().unwrap(),
+                        i + 1,
+                        outputs.len()
+                    )
+                })
+                .map(|m| Memo::new_message(m).unwrap())
+        })
+        .collect::<Vec<_>>();
+
+    let transfer_outputs = outputs
+        .iter()
+        .zip(&memos)
+        .map(|(&amt, memo)| StealthOutputToCreate {
+            owner_address: dest_address.clone(),
+            amount: amt.into(),
+            memo: memo.as_ref(),
+        });
+
+    let (key_branch, key_id, public_key) = if spends_revealed_funds {
+        (
+            KeyBranch::Account,
+            src_account
+                .owner_key_id()
+                .expect("Source account does not have the required spend key"),
+            *src_account.owner_public_key(),
+        )
+    } else {
+        // If we are not spending revealed funds, we can use the nonce key for signing
+        let nonce_key = sdk.key_manager_api().next_public_key(KeyBranch::Nonce)?;
+
+        (
+            KeyBranch::Nonce,
+            nonce_key.key_id,
+            nonce_key.public_key.to_byte_type(),
+        )
+    };
+
+    let params = TransferStatementParams {
+        spend_key_branch: KeyBranch::Account,
+        spend_key_id,
+        view_only_key_id: view_key_id,
+        resource_address: &XTR,
+        resource_view_key: None,
+        inputs: &inputs_to_spend.inputs,
+        input_revealed_amount: inputs_to_spend.revealed,
+        outputs: transfer_outputs.chain(change_output),
+        // TODO: this only works with XTR
+        output_revealed_amount: fee_amount.into(),
+        required_signer: public_key,
+    };
+
+    let transfer = outputs_api.generate_transfer_statement(params)?;
+
+    let lock_id = lock.keep_locked();
+
+    Ok(TransferOutput {
+        statement: transfer,
+        resource_address: XTR,
+        lock_id,
+        required_signer_key_branch: key_branch,
+        required_signer_key_id: key_id,
+        account_component_address: *src_account.component_address(),
+    })
+}
+
+pub fn create_transfer_transaction(
+    sdk: &Sdk,
+    network: Network,
+    transfer: &TransferOutput,
+) -> anyhow::Result<UnsignedTransaction> {
+    let utxo_inputs = transfer
+        .statement
+        .inputs_statement
+        .inputs
+        .iter()
+        .map(|i| UtxoAddress::new(transfer.resource_address, i.commitment.into()))
+        .map(SubstateRequirement::unversioned);
+
+    let revealed_input_amount = transfer.statement.inputs_statement.revealed_amount;
+    let statement = &transfer.statement;
+
+    let maybe_account_input = revealed_input_amount
+        .is_positive()
+        .then_some(transfer.account_component_address);
+    let maybe_vault_input = maybe_account_input
+        .as_ref()
+        .and_then(|_| {
+            sdk.accounts_api()
+                .get_vault_by_resource(&transfer.account_component_address, &XTR)
+                .optional()
+                .transpose()
+        })
+        .transpose()?;
+
+    let transaction = Transaction::builder()
+        .for_network(network.as_byte())
+        .with_fee_instructions_builder(|builder| {
+            if revealed_input_amount.is_positive() {
+                builder
+                    .call_method(
+                        transfer.account_component_address,
+                        "withdraw",
+                        args![XTR, statement.inputs_statement.revealed_amount],
+                    )
+                    .put_last_instruction_output_on_workspace("fee_input_bucket")
+                    .pay_fee_stealth_with_input_bucket(statement.clone(), "fee_input_bucket")
+            } else {
+                builder.pay_fee_stealth(statement.clone())
+            }
+        })
+        .with_inputs(utxo_inputs)
+        .with_inputs(maybe_account_input.map(Into::into))
+        .with_inputs(maybe_vault_input.map(|v| v.id.into()))
+        // TODO: remove the need to add this input
+        .add_input(XTR)
+        .build_unsigned_transaction();
+    Ok(transaction)
+}
+
+pub async fn submit_transaction(
+    sdk: &Sdk,
+    transaction: Transaction,
+    new_account_data: Option<NewAccountData>,
+    lock_id: Option<WalletLockId>,
+) -> anyhow::Result<TransactionId> {
+    let id = sdk
+        .transaction_api()
+        .insert_new_transaction(transaction, new_account_data, false)?;
+    if let Some(lock_id) = lock_id {
+        sdk.transaction_api()
+            .locks_set_transaction_id(lock_id, id)?;
+    }
+    if !sdk.transaction_api().submit_transaction(id).await? {
+        return Err(anyhow!("Failed to submit transaction {}", id));
+    }
+
+    Ok(id)
+
+    // self.wait_for_transaction_to_finalize(id).await
+}
+
+pub async fn wait_for_transaction_to_finalize(
+    sdk: &Sdk,
+    id: TransactionId,
+    // cancellation_token: Option<Notify<()>>,
+) -> anyhow::Result<WalletTransaction> {
+    loop {
+        // TODO: add cancelation support
+        // if let Some(token) = &cancellation_token {
+        //     if token.
+        //         return Err(anyhow!("Transaction finalization wait was cancelled"));
+        //     }
+        // }
+        let maybe_tx = sdk
+            .transaction_api()
+            .check_and_store_finalized_transaction(id)
+            .await?;
+        match maybe_tx {
+            Some(tx) => {
+                return if matches!(tx.status, TransactionStatus::Accepted) {
+                    info!("Transaction {} was accepted", id);
+                    Ok(tx)
+                } else {
+                    Err(anyhow!(
+                        "Transaction {} failed: {:?} {} {}",
+                        id,
+                        tx.status,
+                        tx.invalid_reason.as_deref().unwrap_or(""),
+                        tx.finalize
+                            .as_ref()
+                            .and_then(|f| f.result.any_reject())
+                            .display()
+                    ))
+                };
+            }
+            None => {
+                info!("Transaction {} is still pending...", id);
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
+    }
 }

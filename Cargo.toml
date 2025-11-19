@@ -32,7 +32,12 @@ env_logger = "0.11.8"
 futures = "0.3.31"
 log = "0.4.28"
 clap = { version = "4.5.48", features = ["derive"] }
-tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.47.1", features = [
+    "macros",
+    "rt-multi-thread",
+    "process",
+    "sync",
+] }
 url = "2.5.7"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -40,6 +45,12 @@ spinners = "4.1.1"
 termimad = "0.34.0"
 rand = "0.8"
 zeroize = "1.8.2"
+toml = "0.8"
+hex = "0.4.3"
+blake2 = "0.10.6"
+tari-tapplet-lib = { path = "../tari-tapplet-lib", features = ["host"] }
+async-trait = "0.1.89"
+dialoguer = "0.12.0"
 
 [[bin]]
 name = "ootle"

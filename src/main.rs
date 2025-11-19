@@ -5,12 +5,14 @@ mod macros;
 mod models;
 mod spinner;
 mod table;
+mod tapplets;
 mod transfer;
 mod wallet;
 
+use crate::models::BalanceEntry;
 use crate::spinner::spinner;
 use crate::table::Table;
-use crate::transfer::{handle_transfer_command, TransferCommand};
+use crate::transfer::{TransferCommand, handle_transfer_command};
 use crate::wallet::{BalanceStuff, Sdk, Wallet};
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -19,14 +21,14 @@ use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_crypto::tari_utilities::hex::from_hex;
 use tari_crypto::tari_utilities::{ByteArray, SafePassword};
 use tari_engine_types::template_lib_models::ResourceAddress;
-use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_common_types::Network;
+use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_wallet_sdk::constants::XTR;
 use tari_ootle_wallet_sdk::models::{AccountWithAddress, EpochBirthday};
 use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
-use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 use tari_template_lib_types::Amount;
+use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 use termimad::crossterm::style::Color;
 use url::Url;
 use zeroize::Zeroizing;
@@ -153,6 +155,114 @@ enum Command {
     CreateSeedWords,
     /// Show wallet info
     ShowInfo,
+    /// Manage tapplets
+    #[clap(subcommand)]
+    Tapplet(TappletCommand),
+}
+
+#[derive(Subcommand)]
+enum TappletCommand {
+    /// Fetch all tapplet registries
+    Fetch {
+        #[arg(
+            short,
+            long,
+            help = "Path to the tapplet cache directory",
+            default_value = "data/tapplet_cache"
+        )]
+        cache_directory: Box<Path>,
+    },
+    /// Search for tapplets in registries
+    Search {
+        #[arg(short, long, help = "Query string to search for tapplets")]
+        query: String,
+        #[arg(
+            short,
+            long,
+            help = "Path to the tapplet cache directory",
+            default_value = "data/tapplet_cache"
+        )]
+        cache_directory: Box<Path>,
+    },
+    /// List installed tapplets
+    List {
+        #[arg(
+            short,
+            long,
+            help = "Path to the tapplet cache directory",
+            default_value = "data/tapplet_cache"
+        )]
+        cache_directory: Box<Path>,
+    },
+    /// Install a tapplet from a registry or local path
+    Install {
+        #[arg(short, long, help = "The name of the registry to install from")]
+        registry: Option<String>,
+        #[arg(short, long, help = "Name of the tapplet to install")]
+        name: Option<String>,
+        #[arg(
+            long,
+            help = "Path to a local tapplet directory to install",
+            conflicts_with = "name"
+        )]
+        path: Option<Box<Path>>,
+        #[arg(
+            short,
+            long,
+            help = "Path to the tapplet cache directory",
+            default_value = "data/tapplet_cache"
+        )]
+        cache_directory: Box<Path>,
+        #[arg(
+            short,
+            long,
+            help = "Optional account name to install the tapplet for. If not provided, installs for all accounts"
+        )]
+        account_name: Option<String>,
+    },
+    /// Uninstall a tapplet by name
+    Uninstall {
+        #[arg(short, long, help = "Name of the tapplet to uninstall")]
+        name: String,
+        #[arg(
+            short,
+            long,
+            help = "Path to the tapplet cache directory",
+            default_value = "data/tapplet_cache"
+        )]
+        cache_directory: Box<Path>,
+    },
+    /// Run an installed tapplet
+    Run {
+        #[arg(short, long, help = "Name of the tapplet to run")]
+        name: String,
+        #[arg(
+            short,
+            long,
+            help = "Path to the tapplet cache directory",
+            default_value = "data/tapplet_cache"
+        )]
+        cache_directory: Box<Path>,
+        #[arg(
+            long,
+            help = "Optional account name to run the tapplet for. If not provided, uses the default account"
+        )]
+        account_name: Option<String>,
+        #[arg(
+            short,
+            long,
+            help = "Method to invoke in the tapplet",
+            default_value = "main"
+        )]
+        method: String,
+        #[arg(
+            short,
+            long,
+            help = "Arguments to pass to the tapplet in key=value format",
+            num_args = 0..,
+        )]
+        args: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -437,6 +547,9 @@ async fn main() -> Result<(), anyhow::Error> {
         Command::Transfer(command) => {
             handle_transfer_command(&mut wallet, command).await?;
         }
+        Command::Tapplet(tapplet_command) => {
+            handle_tapplet_command(&mut wallet, tapplet_command).await?;
+        }
     }
 
     Ok(())
@@ -453,6 +566,142 @@ fn write_to_json_file<T: serde::Serialize, P: AsRef<Path>>(
         .open(path)
         .context("failed to open file for writing")?;
     serde_json::to_writer_pretty(&mut file, data).context("failed to encode data to file")?;
+    Ok(())
+}
+
+async fn handle_tapplet_command(
+    wallet: &mut Wallet,
+    command: TappletCommand,
+) -> Result<(), anyhow::Error> {
+    match command {
+        TappletCommand::Fetch { cache_directory } => {
+            tapplets::fetch_registries(&cache_directory).await?;
+        }
+        TappletCommand::Search {
+            query,
+            cache_directory,
+        } => {
+            let results = tapplets::search_tapplets(&query, &cache_directory).await?;
+
+            if results.is_empty() {
+                cli_println!(ANSI_WHITE, "No tapplets found matching '{}'", query);
+                cli_println!(
+                    ANSI_BLUE,
+                    "\nTip: Run 'tapplet fetch' first to download registry data"
+                );
+            } else {
+                cli_println!(ANSI_BLUE, "Found {} tapplet(s):", results.len());
+                cli_println!(ANSI_BLUE, "-----------------------------------");
+
+                for tapplet in results {
+                    cli_println!(ANSI_GREEN, "\n{} v{}", tapplet.name, tapplet.version);
+                    if let Some(desc) = &tapplet.description {
+                        cli_println!(ANSI_WHITE, "  {}", desc);
+                    }
+                    if let Some(author) = &tapplet.author {
+                        cli_println!(ANSI_WHITE, "  Author: {}", author);
+                    }
+                    if let Some(repo) = &tapplet.repository {
+                        cli_println!(ANSI_WHITE, "  Repository: {}", repo);
+                    }
+                }
+            }
+        }
+        TappletCommand::List { cache_directory } => {
+            let installed = tapplets::list_installed_tapplets(&cache_directory).await?;
+
+            if installed.is_empty() {
+                cli_println!(ANSI_WHITE, "No tapplets installed");
+            } else {
+                cli_println!(ANSI_BLUE, "Installed tapplets ({}):", installed.len());
+                cli_println!(ANSI_BLUE, "-----------------------------------");
+                for tapplet in installed {
+                    cli_println!(ANSI_GREEN, "  • {}", tapplet);
+                }
+            }
+        }
+        TappletCommand::Install {
+            registry,
+            name,
+            path,
+            cache_directory,
+            account_name,
+        } => {
+            if let Some(tapplet_name) = name {
+                tapplets::install_from_registry(
+                    wallet,
+                    registry,
+                    &tapplet_name,
+                    &cache_directory,
+                    account_name.as_deref(),
+                )
+                .await?;
+            } else if let Some(tapplet_path) = path {
+                tapplets::install_from_local(
+                    wallet,
+                    &tapplet_path,
+                    &cache_directory,
+                    account_name.as_deref(),
+                )
+                .await?;
+            } else {
+                anyhow::bail!("Either --name or --path must be specified");
+            }
+        }
+        TappletCommand::Uninstall {
+            name,
+            cache_directory,
+        } => {
+            let installed_dir = cache_directory.join("installed").join(&name);
+
+            if !installed_dir.exists() {
+                anyhow::bail!("Tapplet '{}' is not installed", name);
+            }
+
+            print!("Uninstall tapplet '{}'? [y/N]: ", name);
+            use std::io::{self, Write};
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+
+            if input.trim().eq_ignore_ascii_case("y") {
+                std::fs::remove_dir_all(&installed_dir)?;
+                cli_println!(ANSI_GREEN, "✓ Tapplet '{}' uninstalled successfully", name);
+            } else {
+                cli_println!(ANSI_WHITE, "Uninstall cancelled");
+            }
+        }
+        TappletCommand::Run {
+            name,
+            cache_directory,
+            account_name,
+            method,
+            args,
+        } => {
+            let args_map: std::collections::HashMap<String, String> = args
+                .into_iter()
+                .filter_map(|arg| {
+                    let mut parts = arg.splitn(2, '=');
+                    if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                        Some((key.to_string(), value.to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            tapplets::run_tapplet(
+                wallet,
+                &name,
+                &method,
+                args_map,
+                &cache_directory,
+                account_name.as_deref(),
+            )
+            .await?;
+        }
+    }
+
     Ok(())
 }
 
