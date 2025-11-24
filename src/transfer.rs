@@ -5,7 +5,7 @@ use crate::{cli_println, write_to_json_file, ANSI_GREEN, ANSI_WHITE};
 use anyhow::Context;
 use clap::Subcommand;
 use std::path::Path;
-use tari_ootle_wallet_sdk::models::{KeyBranch, KeyId, WalletLockId};
+use tari_ootle_wallet_sdk::models::{KeyId, WalletLockId};
 use tari_ootle_wallet_sdk::OotleAddress;
 use tari_transaction::{Transaction, UnsignedTransaction};
 
@@ -130,7 +130,6 @@ pub async fn handle_transfer_command(
                 &UnsignedTransactionOutput {
                     transaction,
                     lock_id: transfer.lock_id,
-                    required_signer_key_branch: transfer.required_signer_key_branch,
                     required_signer_key_id: transfer.required_signer_key_id,
                 },
                 &output_file,
@@ -150,11 +149,8 @@ pub async fn handle_transfer_command(
                     .context("failed to open transaction file")?,
             )
             .context("failed to parse transaction file")?;
-            let signed_transaction = wallet.sign_transaction(
-                data.transaction,
-                data.required_signer_key_branch,
-                data.required_signer_key_id,
-            );
+            let signed_transaction =
+                wallet.sign_transaction(data.transaction, data.required_signer_key_id);
             cli_println!(ANSI_GREEN, "✔️ Transfer transaction signed successfully");
             write_to_json_file(
                 &SignedTransactionOutput {
@@ -217,7 +213,6 @@ pub async fn handle_transfer_command(
 pub struct UnsignedTransactionOutput {
     pub transaction: UnsignedTransaction,
     pub lock_id: WalletLockId,
-    pub required_signer_key_branch: KeyBranch,
     pub required_signer_key_id: KeyId,
 }
 
