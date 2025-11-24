@@ -594,14 +594,8 @@ async fn handle_tapplet_command(
 
                 for tapplet in results {
                     cli_println!(ANSI_GREEN, "\n{} v{}", tapplet.name, tapplet.version);
-                    if let Some(desc) = &tapplet.description {
+                    if let Some(ref desc) = tapplet.description {
                         cli_println!(ANSI_WHITE, "  {}", desc);
-                    }
-                    if let Some(author) = &tapplet.author {
-                        cli_println!(ANSI_WHITE, "  Author: {}", author);
-                    }
-                    if let Some(repo) = &tapplet.repository {
-                        cli_println!(ANSI_WHITE, "  Repository: {}", repo);
                     }
                 }
             }

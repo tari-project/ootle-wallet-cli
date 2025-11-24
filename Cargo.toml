@@ -49,9 +49,10 @@ zeroize = "1.8.2"
 toml = "0.8"
 hex = "0.4.3"
 blake2 = "0.10.6"
-tari-tapplet-lib = { git = "https://github.com/tari-project/tari-tapplet-lib.git", features = [
-    "host",
-] }
+# tari-tapplet-lib = { git = "https://github.com/tari-project/tari-tapplet-lib.git", features = [
+# "host",
+# ] }
+tari-tapplet-lib = { path = "../tari-tapplet-lib", features = ["host"] }
 async-trait = "0.1.89"
 dialoguer = "0.12.0"
 

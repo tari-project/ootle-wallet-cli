@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use super::default_registries::get_default_registries;
-use super::search::TappletManifest;
 use crate::wallet::Wallet;
 use anyhow::{Context, anyhow};
 use blake2::Blake2b512;
@@ -18,6 +17,7 @@ use tari_crypto::tari_utilities::ByteArray;
 use tari_ootle_common_types::Epoch;
 use tari_ootle_wallet_sdk::models::KeyIdOrPublicKey;
 use tari_ootle_wallet_sdk::models::KeyType;
+use tari_tapplet_lib::TappletConfig;
 use tari_tapplet_lib::TappletRegistry;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 
@@ -30,10 +30,10 @@ pub async fn install_from_registry(
     let default_registries = get_default_registries();
 
     // Find the tapplet in registries
-    let mut found_manifest: Option<(String, TappletManifest, std::path::PathBuf)> = None;
+    let mut found_manifest: Option<(String, TappletConfig, std::path::PathBuf)> = None;
 
     dbg!("here");
-    for (reg_name, _url) in default_registries {
+    for (reg_name, url) in default_registries {
         dbg!("checking registry:", &reg_name);
         // Skip if specific registry requested and this isn't it
         if let Some(ref requested_registry) = registry
@@ -51,9 +51,9 @@ pub async fn install_from_registry(
         registry.load().await?;
 
         // Look for the tapplet
-        for (tapp_config, path) in registry.tapplets_and_dirs() {
+        for (tapp_config, path) in registry.tapplets_and_dirs()? {
             if tapp_config.name_matches(name) {
-                found_manifest = Some((reg_name.to_string(), tapp_config, path));
+                found_manifest = Some((reg_name.to_string(), tapp_config.clone(), path));
                 break;
             }
         }
@@ -100,7 +100,7 @@ pub async fn install_from_registry(
     // println!("\nInstalling tapplet for {} account(s)...", accounts.len());
 
     // Install the tapplet files
-    let installed_dir = cache_directory.join("installed").join(&manifest.name);
+    let installed_dir = cache_directory.join("installed").join(&tapp_config.name);
     std::fs::create_dir_all(&installed_dir)?;
 
     // Copy tapplet files
@@ -117,7 +117,7 @@ pub async fn install_from_registry(
 
     println!(
         "\n✓ Tapplet '{}' v{} installed successfully",
-        manifest.name, manifest.version
+        tapp_config.name, tapp_config.version
     );
 
     Ok(())
@@ -146,7 +146,7 @@ pub async fn install_from_local(
 
     let manifest_content =
         std::fs::read_to_string(&manifest_path).context("Failed to read manifest.toml")?;
-    let manifest: TappletManifest =
+    let manifest: TappletConfig =
         toml::from_str(&manifest_content).context("Failed to parse manifest.toml")?;
 
     println!(
@@ -179,7 +179,7 @@ pub async fn install_from_local(
 
     // Create the new child account
     let key_id = account.view_only_key_id();
-    let parent_view_key = wallet.sdk().key_manager_api().get_view_only_key(key_id)?;
+    let parent_view_key = wallet.sdk().key_manager_api().get_key(key_id)?;
 
     let tapplet_private_view_key_bytes = Blake2b512::new()
         .chain(b"tapplet_ootle_storage_address")

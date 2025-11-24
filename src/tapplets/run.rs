@@ -151,8 +151,7 @@ impl MinotariTappletApiV1 for OotleApiProvider {
         )?;
         let unsigned_tx = create_transfer_transaction(&w, w.network(), &transfer)?;
 
-        let signed_tx = w.local_signer_api().sign(
-            transfer.required_signer_key_branch,
+        let signed_tx = w.signer_api().sign(
             transfer.required_signer_key_id,
             unsigned_tx.authorized_sealed_signer().build(),
         )?;

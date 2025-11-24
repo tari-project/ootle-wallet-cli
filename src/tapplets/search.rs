@@ -5,22 +5,13 @@ use super::default_registries::get_default_registries;
 use anyhow::Context;
 use serde::Deserialize;
 use std::path::Path;
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct TappletManifest {
-    pub name: String,
-    pub version: String,
-    pub description: Option<String>,
-    pub author: Option<String>,
-    pub repository: Option<String>,
-    pub public_key: String,
-}
+use tari_tapplet_lib::TappletConfig;
 
 /// Search for tapplets matching the query string
 pub async fn search_tapplets(
     query: &str,
     cache_directory: &Path,
-) -> anyhow::Result<Vec<TappletManifest>> {
+) -> anyhow::Result<Vec<TappletConfig>> {
     let default_registries = get_default_registries();
     let mut results = Vec::new();
 
@@ -51,7 +42,7 @@ pub async fn search_tapplets(
                     let manifest_content = std::fs::read_to_string(&manifest_path)
                         .context(format!("Failed to read manifest: {:?}", manifest_path))?;
 
-                    if let Ok(manifest) = toml::from_str::<TappletManifest>(&manifest_content) {
+                    if let Ok(manifest) = toml::from_str::<TappletConfig>(&manifest_content) {
                         // Check if query matches name or description
                         let query_lower = query.to_lowercase();
                         let matches = manifest.name.to_lowercase().contains(&query_lower)

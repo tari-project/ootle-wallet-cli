@@ -409,19 +409,10 @@ impl Wallet {
         )
     }
 
-    pub fn sign_transaction(
-        &self,
-        transaction: UnsignedTransaction,
-        key_branch: KeyBranch,
-        key_id: KeyId,
-    ) -> Transaction {
+    pub fn sign_transaction(&self, transaction: UnsignedTransaction, key_id: KeyId) -> Transaction {
         self.sdk
-            .local_signer_api()
-            .sign(
-                key_branch,
-                key_id,
-                transaction.authorized_sealed_signer().build(),
-            )
+            .signer_api()
+            .sign(key_id, transaction.authorized_sealed_signer().build())
             .unwrap()
     }
 
@@ -602,19 +593,9 @@ pub fn create_transfer(
     })
 }
 
-pub fn sign_transaction(
-    &self,
-    transaction: UnsignedTransaction,
-    key_branch: KeyBranch,
-    key_id: KeyId,
-) -> Transaction {
-    self.sdk
-        .local_signer_api()
-        .sign(
-            key_branch,
-            key_id,
-            transaction.authorized_sealed_signer().build(),
-        )
+pub fn sign_transaction(sdk: &Sdk, transaction: UnsignedTransaction, key_id: KeyId) -> Transaction {
+    sdk.signer_api()
+        .sign(key_id, transaction.authorized_sealed_signer().build())
         .unwrap()
 }
 
