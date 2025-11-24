@@ -8,6 +8,7 @@ use anyhow::{Context, anyhow};
 use blake2::Blake2b512;
 use blake2::Digest;
 use blake2::digest::Update;
+use log::debug;
 use std::path::Path;
 use tari_crypto::keys::PublicKey;
 use tari_crypto::keys::SecretKey;
@@ -17,6 +18,7 @@ use tari_crypto::tari_utilities::ByteArray;
 use tari_ootle_common_types::Epoch;
 use tari_ootle_wallet_sdk::models::KeyIdOrPublicKey;
 use tari_ootle_wallet_sdk::models::KeyType;
+use tari_tapplet_lib::TappletRegistry;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 
 /// Install a tapplet from a registry
@@ -30,37 +32,29 @@ pub async fn install_from_registry(
     // Find the tapplet in registries
     let mut found_manifest: Option<(String, TappletManifest, std::path::PathBuf)> = None;
 
+    dbg!("here");
     for (reg_name, _url) in default_registries {
+        dbg!("checking registry:", &reg_name);
         // Skip if specific registry requested and this isn't it
         if let Some(ref requested_registry) = registry
             && reg_name != requested_registry
         {
+            debug!("skipping registry: {}", &reg_name);
             continue;
         }
 
-        let registry_dir = cache_directory.join("registries").join(reg_name);
-        let tapplets_dir = registry_dir.join("tapplets");
+        dbg!("looking in registry:", &reg_name);
 
-        if !tapplets_dir.exists() {
-            continue;
-        }
+        let registry_dir = cache_directory.join("registries");
+        let mut registry = TappletRegistry::new(name, url, registry_dir);
+
+        registry.load().await?;
 
         // Look for the tapplet
-        for entry in std::fs::read_dir(&tapplets_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_dir() {
-                let manifest_path = path.join("manifest.toml");
-                if manifest_path.exists() {
-                    let manifest_content = std::fs::read_to_string(&manifest_path)?;
-                    if let Ok(manifest) = toml::from_str::<TappletManifest>(&manifest_content)
-                        && manifest.name == name
-                    {
-                        found_manifest = Some((reg_name.to_string(), manifest, path));
-                        break;
-                    }
-                }
+        for (tapp_config, path) in registry.tapplets_and_dirs() {
+            if tapp_config.name_matches(name) {
+                found_manifest = Some((reg_name.to_string(), tapp_config, path));
+                break;
             }
         }
 
@@ -69,20 +63,15 @@ pub async fn install_from_registry(
         }
     }
 
-    let (reg_name, manifest, tapplet_source_dir) =
+    let (reg_name, tapp_config, tapplet_source_dir) =
         found_manifest.ok_or_else(|| anyhow!("Tapplet '{}' not found in registries", name))?;
 
     println!(
         "Found tapplet '{}' v{} in registry '{}'",
-        manifest.name, manifest.version, reg_name
+        tapp_config.name, tapp_config.version, reg_name
     );
-    if let Some(desc) = &manifest.description {
-        println!("Description: {}", desc);
-    }
-    if let Some(author) = &manifest.author {
-        println!("Author: {}", author);
-    }
 
+    todo!();
     // Prompt for confirmation
     print!("\nInstall this tapplet? [y/N]: ");
     use std::io::{self, Write};

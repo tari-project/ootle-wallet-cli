@@ -14,7 +14,7 @@ pub async fn fetch_registries(cache_directory: &Path) -> anyhow::Result<()> {
     for (name, url) in default_registries {
         println!("  Fetching '{}' from {}...", name, url);
 
-        let registry_dir = cache_directory.join("registries").join(name);
+        let registry_dir = cache_directory.join("registries");
         let mut registry = TappletRegistry::new(name, url, registry_dir);
         registry.fetch().await?;
 
