@@ -5,7 +5,7 @@ use crate::{cli_println, write_to_json_file, ANSI_GREEN, ANSI_WHITE};
 use anyhow::Context;
 use clap::Subcommand;
 use std::path::Path;
-use tari_ootle_wallet_sdk::models::{KeyId, WalletLockId};
+use tari_ootle_wallet_sdk::models::{KeyId, StealthUtxoSpendKeyId, WalletLockId};
 use tari_ootle_wallet_sdk::OotleAddress;
 use tari_transaction::{Transaction, UnsignedTransaction};
 
@@ -127,10 +127,11 @@ pub async fn handle_transfer_command(
             let transaction = wallet.create_transfer_transaction(&transfer)?;
             cli_println!(ANSI_GREEN, "✔️ Transfer transaction created successfully");
             write_to_json_file(
-                &UnsignedTransactionOutput {
+                &UnsignedTransactionData {
                     transaction,
+                    utxo_spend_keys: transfer.utxo_spend_keys,
                     lock_id: transfer.lock_id,
-                    required_signer_key_id: transfer.required_signer_key_id,
+                    seal_signer_key_id: transfer.seal_signer_key_id,
                 },
                 &output_file,
             )?;
@@ -144,18 +145,18 @@ pub async fn handle_transfer_command(
             transaction_file,
             output_file,
         } => {
-            let data: UnsignedTransactionOutput = serde_json::from_reader(
+            let data: UnsignedTransactionData = serde_json::from_reader(
                 std::fs::File::open(&transaction_file)
                     .context("failed to open transaction file")?,
             )
             .context("failed to parse transaction file")?;
-            let signed_transaction =
-                wallet.sign_transaction(data.transaction, data.required_signer_key_id);
+            let lock_id = data.lock_id;
+            let signed_transaction = wallet.sign_transaction(data)?;
             cli_println!(ANSI_GREEN, "✔️ Transfer transaction signed successfully");
             write_to_json_file(
                 &SignedTransactionOutput {
                     transaction: signed_transaction,
-                    lock_id: data.lock_id,
+                    lock_id,
                 },
                 &output_file,
             )?;
@@ -210,10 +211,11 @@ pub async fn handle_transfer_command(
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct UnsignedTransactionOutput {
+pub struct UnsignedTransactionData {
     pub transaction: UnsignedTransaction,
     pub lock_id: WalletLockId,
-    pub required_signer_key_id: KeyId,
+    pub seal_signer_key_id: KeyId,
+    pub utxo_spend_keys: Vec<StealthUtxoSpendKeyId>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
