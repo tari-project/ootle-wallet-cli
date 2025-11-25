@@ -465,7 +465,8 @@ fn init_wallet(common: &CommonArgs) -> anyhow::Result<Wallet> {
         override_keyring_password: Some(common.password.clone()),
     };
 
-    let mut sdk = Sdk::initialize(store, indexer, config, EpochBirthday::far_future())?;
+    let mut sdk =
+        Sdk::initialize_with_local_key_store(store, indexer, config, EpochBirthday::far_future())?;
     // Load seed words if present. If we don't do this then the wallet will be in read-only mode
     if sdk.load_seed_words()?.is_some() {
         cli_println!(ANSI_BLUE, "✔️ Wallet is in read/write mode");

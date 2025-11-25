@@ -24,13 +24,16 @@ use tari_ootle_wallet_sdk::constants::{
     XTR, XTR_FAUCET_COMPONENT_ADDRESS, XTR_FAUCET_VAULT_ADDRESS,
 };
 use tari_ootle_wallet_sdk::crypto::memo::Memo;
+use tari_ootle_wallet_sdk::local_key_store::LocalKeyStore;
 use tari_ootle_wallet_sdk::models::{
     AccountWithAddress, KeyBranch, KeyId, KeyType, NewAccountData, TransactionStatus, WalletLockId,
     WalletTransaction,
 };
 use tari_ootle_wallet_sdk::models::{StealthOutputInfo, WalletEvent};
 use tari_ootle_wallet_sdk::network::WalletNetworkInterface;
-use tari_ootle_wallet_sdk::{OotleAddress, RistrettoOotleAddress, SeedWords, WalletSdk};
+use tari_ootle_wallet_sdk::{
+    OotleAddress, RistrettoOotleAddress, SeedWords, WalletSdk, WalletSdkSpec,
+};
 use tari_ootle_wallet_sdk_services::account_monitor::AccountScanner;
 use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
 use tari_ootle_wallet_sdk_services::notify::Notify;
@@ -41,7 +44,15 @@ use tari_template_lib_types::{Amount, ResourceType};
 use tari_transaction::{args, Transaction, TransactionId, UnsignedTransaction};
 use tokio::sync::broadcast;
 
-pub type Sdk = WalletSdk<SqliteWalletStore, IndexerRestApiNetworkInterface>;
+pub struct WalletCliSpec;
+
+impl WalletSdkSpec for WalletCliSpec {
+    type NetworkInterface = IndexerRestApiNetworkInterface;
+    type Store = SqliteWalletStore;
+    type KeyStore = LocalKeyStore;
+}
+
+pub type Sdk = WalletSdk<WalletCliSpec>;
 
 pub struct Wallet {
     sdk: Sdk,
@@ -359,9 +370,7 @@ impl Wallet {
             .with_inputs(inputs.into_iter().map(|input| input.into_unversioned()))
             .build();
 
-        let transaction =
-            sdk.local_signer_api()
-                .sign(KeyBranch::Account, account_owner_key_id, transaction)?;
+        let transaction = sdk.signer_api().sign(account_owner_key_id, transaction)?;
 
         info!(
             "💰️ create free test coins: Submitting transaction {} for account: {}",
@@ -497,7 +506,6 @@ impl Wallet {
         };
 
         let params = TransferStatementParams {
-            spend_key_branch: KeyBranch::Account,
             spend_key_id,
             view_only_key_id: view_key_id,
             resource_address: &XTR,
@@ -524,19 +532,10 @@ impl Wallet {
         })
     }
 
-    pub fn sign_transaction(
-        &self,
-        transaction: UnsignedTransaction,
-        key_branch: KeyBranch,
-        key_id: KeyId,
-    ) -> Transaction {
+    pub fn sign_transaction(&self, transaction: UnsignedTransaction, key_id: KeyId) -> Transaction {
         self.sdk
-            .local_signer_api()
-            .sign(
-                key_branch,
-                key_id,
-                transaction.authorized_sealed_signer().build(),
-            )
+            .signer_api()
+            .sign(key_id, transaction.authorized_sealed_signer().build())
             .unwrap()
     }
 
