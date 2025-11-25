@@ -31,7 +31,7 @@ anyhow = "1.0.100"
 env_logger = "0.11.8"
 futures = "0.3.31"
 log = "0.4.28"
-clap = { version = "4.5.48", features = ["derive"] }
+clap = { version = "4.5.48", features = ["derive", "env"] }
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
 url = "2.5.7"
 serde = { version = "1.0.228", features = ["derive"] }

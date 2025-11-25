@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use crate::models::BalanceEntry;
+use crate::transfer::UnsignedTransactionData;
 use anyhow::anyhow;
 use anyhow::Context;
 use log::*;
@@ -18,7 +19,7 @@ use tari_ootle_common_types::Epoch;
 use tari_ootle_common_types::{Network, SubstateRequirement};
 use tari_ootle_wallet_sdk::apis::confidential_transfer::UtxoInputSelection;
 use tari_ootle_wallet_sdk::apis::stealth_outputs::TransferStatementParams;
-use tari_ootle_wallet_sdk::apis::stealth_transfer::StealthOutputToCreate;
+use tari_ootle_wallet_sdk::apis::stealth_transfer::{PayTo, StealthOutputToCreate};
 use tari_ootle_wallet_sdk::cipher_seed::CipherSeedRestore;
 use tari_ootle_wallet_sdk::constants::{
     XTR, XTR_FAUCET_COMPONENT_ADDRESS, XTR_FAUCET_VAULT_ADDRESS,
@@ -26,8 +27,8 @@ use tari_ootle_wallet_sdk::constants::{
 use tari_ootle_wallet_sdk::crypto::memo::Memo;
 use tari_ootle_wallet_sdk::local_key_store::LocalKeyStore;
 use tari_ootle_wallet_sdk::models::{
-    AccountWithAddress, KeyBranch, KeyId, KeyType, NewAccountData, TransactionStatus, WalletLockId,
-    WalletTransaction,
+    AccountWithAddress, KeyBranch, KeyId, KeyType, NewAccountData, StealthUtxoSpendKeyId,
+    TransactionStatus, WalletLockId, WalletTransaction,
 };
 use tari_ootle_wallet_sdk::models::{StealthOutputInfo, WalletEvent};
 use tari_ootle_wallet_sdk::network::WalletNetworkInterface;
@@ -368,7 +369,7 @@ impl Wallet {
                     .call_method(*account.component_address(), "pay_fee", args![FEE])
             })
             .with_inputs(inputs.into_iter().map(|input| input.into_unversioned()))
-            .build();
+            .finish();
 
         let transaction = sdk.signer_api().sign(account_owner_key_id, transaction)?;
 
@@ -407,7 +408,7 @@ impl Wallet {
             Some(name) => self.sdk().accounts_api().get_account_by_name(name).unwrap(),
             None => self.sdk().accounts_api().get_default().unwrap(),
         };
-        let spend_key_id = src_account.owner_key_id().ok_or_else(|| {
+        let owner_key_id = src_account.owner_key_id().ok_or_else(|| {
             anyhow::anyhow!("Source account does not have the required spend key")
         })?;
         let view_key_id = src_account.view_only_key_id();
@@ -453,6 +454,7 @@ impl Wallet {
             owner_address: src_address,
             amount: output_amount,
             memo: Some(&ch_memo),
+            pay_to: PayTo::StealthPublicKey,
         })
         .filter(|o| o.amount > 0);
 
@@ -479,34 +481,29 @@ impl Wallet {
                 .zip(&memos)
                 .map(|(&amt, memo)| StealthOutputToCreate {
                     owner_address: dest_address.clone(),
-                    amount: amt.into(),
+                    amount: amt,
                     memo: memo.as_ref(),
+                    pay_to: PayTo::StealthPublicKey,
                 });
 
-        let (key_branch, key_id, public_key) = if spends_revealed_funds {
+        let (key_branch, key_id) = if spends_revealed_funds {
             (
                 KeyBranch::Account,
                 src_account
                     .owner_key_id()
                     .expect("Source account does not have the required spend key"),
-                *src_account.owner_public_key(),
             )
         } else {
             // If we are not spending revealed funds, we can use the nonce key for signing
             let nonce_key = self
                 .sdk
                 .key_manager_api()
-                .next_public_key(KeyBranch::Nonce)?;
+                .next_derived_key_id(KeyBranch::Nonce)?;
 
-            (
-                KeyBranch::Nonce,
-                nonce_key.key_id,
-                nonce_key.public_key.to_byte_type(),
-            )
+            (KeyBranch::Nonce, nonce_key.into())
         };
 
         let params = TransferStatementParams {
-            spend_key_id,
             view_only_key_id: view_key_id,
             resource_address: &XTR,
             resource_view_key: None,
@@ -515,10 +512,17 @@ impl Wallet {
             outputs: transfer_outputs.chain(change_output),
             // TODO: this only works with XTR
             output_revealed_amount: fee_amount.into(),
-            required_signer: public_key,
         };
 
         let transfer = outputs_api.generate_transfer_statement(params)?;
+
+        let utxo_spend_keys = inputs_to_spend
+            .inputs_iter()
+            .map(|input| StealthUtxoSpendKeyId {
+                account_key_id: owner_key_id,
+                public_nonce: input.public_nonce,
+            })
+            .collect();
 
         let lock_id = lock.keep_locked();
 
@@ -526,17 +530,34 @@ impl Wallet {
             statement: transfer,
             resource_address: XTR,
             lock_id,
+            utxo_spend_keys,
             required_signer_key_branch: key_branch,
-            required_signer_key_id: key_id,
+            seal_signer_key_id: key_id,
             account_component_address: *src_account.component_address(),
         })
     }
 
-    pub fn sign_transaction(&self, transaction: UnsignedTransaction, key_id: KeyId) -> Transaction {
-        self.sdk
+    pub fn sign_transaction(&self, data: UnsignedTransactionData) -> anyhow::Result<Transaction> {
+        // Get the seal signer public key
+        let seal_signer_pk = self
+            .sdk
+            .key_manager_api()
+            .get_public_key(data.seal_signer_key_id)?;
+        let seal_signer_pk = seal_signer_pk.public_key().to_byte_type();
+
+        // Add required Utxo spend signatures
+        let signer_with_seal_commit = self.sdk.signer_api().with_context(&seal_signer_pk);
+        let unsealed = data.utxo_spend_keys.iter().try_fold(
+            data.transaction.authorized_sealed_signer().finish(),
+            |acc, key| signer_with_seal_commit.sign_with_stealth_key(key, acc),
+        )?;
+
+        // Finally, sign with the seal signer
+        let signed = self
+            .sdk
             .signer_api()
-            .sign(key_id, transaction.authorized_sealed_signer().build())
-            .unwrap()
+            .sign(data.seal_signer_key_id, unsealed)?;
+        Ok(signed)
     }
 
     pub fn create_transfer_transaction(
@@ -587,8 +608,6 @@ impl Wallet {
             .with_inputs(utxo_inputs)
             .with_inputs(maybe_account_input.map(Into::into))
             .with_inputs(maybe_vault_input.map(|v| v.id.into()))
-            // TODO: remove the need to add this input
-            .add_input(XTR)
             .build_unsigned_transaction();
         Ok(transaction)
     }
@@ -660,7 +679,8 @@ pub struct TransferOutput {
     pub resource_address: ResourceAddress,
     pub account_component_address: ComponentAddress,
     pub required_signer_key_branch: KeyBranch,
-    pub required_signer_key_id: KeyId,
+    pub seal_signer_key_id: KeyId,
+    pub utxo_spend_keys: Vec<StealthUtxoSpendKeyId>,
 }
 
 pub struct BalanceStuff {
