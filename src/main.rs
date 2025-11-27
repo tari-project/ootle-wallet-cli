@@ -12,7 +12,7 @@ mod wallet;
 use crate::spinner::spinner;
 use crate::table::Table;
 use crate::transfer::{TransferCommand, handle_transfer_command};
-use crate::wallet::{BalanceStuff, Sdk, Wallet};
+use crate::wallet::{BalanceStuff, Sdk, TransferOutput, Wallet};
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use crate::models::BalanceEntry;
+use crate::transfer::UnsignedTransactionData;
 use anyhow::Context;
 use anyhow::anyhow;
 use std::collections::{HashMap, HashSet};
@@ -437,11 +438,8 @@ impl Wallet {
         )
     }
 
-    pub fn sign_transaction(&self, transaction: UnsignedTransaction, key_id: KeyId) -> Transaction {
-        self.sdk
-            .signer_api()
-            .sign(key_id, transaction.authorized_sealed_signer().build())
-            .unwrap()
+    pub fn sign_transaction(&self, data: UnsignedTransactionData) -> anyhow::Result<Transaction> {
+        sign_transaction(self.sdk(), data)
     }
 
     pub fn create_transfer_transaction(
@@ -476,7 +474,8 @@ pub struct TransferOutput {
     pub resource_address: ResourceAddress,
     pub account_component_address: ComponentAddress,
     pub required_signer_key_branch: KeyBranch,
-    pub required_signer_key_id: KeyId,
+    pub seal_signer_key_id: KeyId,
+    pub utxo_spend_keys: Vec<StealthUtxoSpendKeyId>,
 }
 
 pub struct BalanceStuff {
@@ -588,8 +587,7 @@ pub fn create_transfer(
             )
         } else {
             // If we are not spending revealed funds, we can use the nonce key for signing
-            let nonce_key = self
-                .sdk
+            let nonce_key = sdk
                 .key_manager_api()
                 .next_derived_key_id(KeyBranch::Nonce)?;
 
@@ -612,7 +610,7 @@ pub fn create_transfer(
         let utxo_spend_keys = inputs_to_spend
             .inputs_iter()
             .map(|input| StealthUtxoSpendKeyId {
-                account_key_id: owner_key_id,
+                account_key_id: spend_key_id,
                 public_nonce: input.public_nonce,
             })
             .collect();
@@ -628,130 +626,130 @@ pub fn create_transfer(
             seal_signer_key_id: key_id,
             account_component_address: *src_account.component_address(),
         })
+}
+
+pub fn sign_transaction(sdk: &Sdk, data: UnsignedTransactionData) -> anyhow::Result<Transaction> {
+    // Get the seal signer public key
+    let seal_signer_pk =
+        sdk
+        .key_manager_api()
+        .get_public_key(data.seal_signer_key_id)?;
+    let seal_signer_pk = seal_signer_pk.public_key().to_byte_type();
+
+    // Add required Utxo spend signatures
+    let signer_with_seal_commit = sdk.signer_api().with_context(&seal_signer_pk);
+    let unsealed = data.utxo_spend_keys.iter().try_fold(
+        data.transaction.authorized_sealed_signer().finish(),
+        |acc, key| signer_with_seal_commit.sign_with_stealth_key(key, acc),
+    )?;
+
+    // Finally, sign with the seal signer
+    let signed =
+        sdk
+        .signer_api()
+        .sign(data.seal_signer_key_id, unsealed)?;
+    Ok(signed)
+}
+
+pub fn create_transfer_transaction(
+    sdk: &Sdk,
+    network: Network,
+    transfer: &TransferOutput,
+) -> anyhow::Result<UnsignedTransaction> {
+    let utxo_inputs = transfer
+        .statement
+        .inputs_statement
+        .inputs
+        .iter()
+        .map(|i| UtxoAddress::new(transfer.resource_address, i.commitment.into()))
+        .map(SubstateRequirement::unversioned);
+
+    let revealed_input_amount = transfer.statement.inputs_statement.revealed_amount;
+    let statement = &transfer.statement;
+
+    let maybe_account_input = revealed_input_amount
+        .is_positive()
+        .then_some(transfer.account_component_address);
+    let maybe_vault_input = maybe_account_input
+        .as_ref()
+        .and_then(|_| {
+            sdk.accounts_api()
+                .get_vault_by_resource(&transfer.account_component_address, &XTR)
+                .optional()
+                .transpose()
+        })
+        .transpose()?;
+
+    let transaction = Transaction::builder()
+        .for_network(network.as_byte())
+        .with_fee_instructions_builder(|builder| {
+            if revealed_input_amount.is_positive() {
+                builder
+                    .call_method(
+                        transfer.account_component_address,
+                        "withdraw",
+                        args![XTR, statement.inputs_statement.revealed_amount],
+                    )
+                    .put_last_instruction_output_on_workspace("fee_input_bucket")
+                    .pay_fee_stealth_with_input_bucket(statement.clone(), "fee_input_bucket")
+            } else {
+                builder.pay_fee_stealth(statement.clone())
+            }
+        })
+        .with_inputs(utxo_inputs)
+        .with_inputs(maybe_account_input.map(Into::into))
+        .with_inputs(maybe_vault_input.map(|v| v.id.into()))
+        .build_unsigned_transaction();
+    Ok(transaction)
+}
+
+#[instrument(skip(sdk, transaction), err)]
+pub async fn submit_transaction(
+    sdk: &Sdk,
+    transaction: Transaction,
+    new_account_data: Option<NewAccountData>,
+    lock_id: Option<WalletLockId>,
+) -> anyhow::Result<TransactionId> {
+    let id = sdk
+        .transaction_api()
+        .insert_new_transaction(transaction, new_account_data, false)?;
+    info!("Transaction created with ID: {}", id);
+
+    if let Some(lock_id) = lock_id {
+        debug!("Setting lock ID for transaction: {}", id);
+        sdk.transaction_api()
+            .locks_set_transaction_id(lock_id, id)?;
     }
 
-    pub fn sign_transaction(sdk: &SDk, data: UnsignedTransactionData) -> anyhow::Result<Transaction> {
-        // Get the seal signer public key
-        let seal_signer_pk = 
-            sdk
-            .key_manager_api()
-            .get_public_key(data.seal_signer_key_id)?;
-        let seal_signer_pk = seal_signer_pk.public_key().to_byte_type();
-
-        // Add required Utxo spend signatures
-        let signer_with_seal_commit = sdk.signer_api().with_context(&seal_signer_pk);
-        let unsealed = data.utxo_spend_keys.iter().try_fold(
-            data.transaction.authorized_sealed_signer().finish(),
-            |acc, key| signer_with_seal_commit.sign_with_stealth_key(key, acc),
-        )?;
-
-        // Finally, sign with the seal signer
-        let signed = 
-            sdk
-            .signer_api()
-            .sign(data.seal_signer_key_id, unsealed)?;
-        Ok(signed)
+    debug!("Submitting transaction: {}", id);
+    if !sdk.transaction_api().submit_transaction(id).await? {
+        error!("Failed to submit transaction: {}", id);
+        return Err(anyhow!("Failed to submit transaction {}", id));
     }
+    info!("Transaction {} submitted successfully", id);
 
-    pub fn create_transfer_transaction(
-        sdk: &Sdk,
-        network: Network,
-        transfer: &TransferOutput,
-    ) -> anyhow::Result<UnsignedTransaction> {
-        let utxo_inputs = transfer
-            .statement
-            .inputs_statement
-            .inputs
-            .iter()
-            .map(|i| UtxoAddress::new(transfer.resource_address, i.commitment.into()))
-            .map(SubstateRequirement::unversioned);
+    Ok(id)
 
-        let revealed_input_amount = transfer.statement.inputs_statement.revealed_amount;
-        let statement = &transfer.statement;
+    // self.wait_for_transaction_to_finalize(id).await
+}
 
-        let maybe_account_input = revealed_input_amount
-            .is_positive()
-            .then_some(transfer.account_component_address);
-        let maybe_vault_input = maybe_account_input
-            .as_ref()
-            .and_then(|_| {
-                sdk.accounts_api()
-                    .get_vault_by_resource(&transfer.account_component_address, &XTR)
-                    .optional()
-                    .transpose()
-            })
-            .transpose()?;
-
-        let transaction = Transaction::builder()
-            .for_network(self.network().as_byte())
-            .with_fee_instructions_builder(|builder| {
-                if revealed_input_amount.is_positive() {
-                    builder
-                        .call_method(
-                            transfer.account_component_address,
-                            "withdraw",
-                            args![XTR, statement.inputs_statement.revealed_amount],
-                        )
-                        .put_last_instruction_output_on_workspace("fee_input_bucket")
-                        .pay_fee_stealth_with_input_bucket(statement.clone(), "fee_input_bucket")
+pub async fn wait_for_transaction_to_finalize(
+    sdk: &Sdk,
+    id: TransactionId,
+) -> anyhow::Result<WalletTransaction> {
+    debug!("Waiting for transaction {} to finalize", id);
+    loop {
+        let maybe_tx = sdk
+            .transaction_api()
+            .check_and_store_finalized_transaction(id)
+            .await?;
+        match maybe_tx {
+            Some(tx) => {
+                return if matches!(tx.status, TransactionStatus::Accepted) {
+                    info!("Transaction {} was accepted", id);
+                    Ok(tx)
                 } else {
-                    builder.pay_fee_stealth(statement.clone())
-                }
-            })
-            .with_inputs(utxo_inputs)
-            .with_inputs(maybe_account_input.map(Into::into))
-            .with_inputs(maybe_vault_input.map(|v| v.id.into()))
-            .build_unsigned_transaction();
-        Ok(transaction)
-    }
-
-    #[instrument(skip(sdk, transaction), err)]
-    pub async fn submit_transaction(
-        sdk: &Sdk,
-        transaction: Transaction,
-        new_account_data: Option<NewAccountData>,
-        lock_id: Option<WalletLockId>,
-    ) -> anyhow::Result<TransactionId> {
-        let id =
-            sdk.transaction_api()
-                .insert_new_transaction(transaction, new_account_data, false)?;
-        info!("Transaction created with ID: {}", id);
-
-        if let Some(lock_id) = lock_id {
-            debug!("Setting lock ID for transaction: {}", id);
-            sdk.transaction_api()
-                .locks_set_transaction_id(lock_id, id)?;
-        }
-
-        debug!("Submitting transaction: {}", id);
-        if !sdk.transaction_api().submit_transaction(id).await? {
-            error!("Failed to submit transaction: {}", id);
-            return Err(anyhow!("Failed to submit transaction {}", id));
-        }
-        info!("Transaction {} submitted successfully", id);
-
-        Ok(id)
-
-        // self.wait_for_transaction_to_finalize(id).await
-    }
-
-    pub async fn wait_for_transaction_to_finalize(
-        &self,
-        id: TransactionId,
-    ) -> anyhow::Result<WalletTransaction> {
-        loop {
-            let maybe_tx = self
-                .sdk()
-                .transaction_api()
-                .check_and_store_finalized_transaction(id)
-                .await?;
-            match maybe_tx {
-                Some(tx) => {
-                    return if matches!(tx.status, TransactionStatus::Accepted) {
-                        info!("Transaction {} was accepted", id);
-                        Ok(tx)
-                    } else {
- error!(
+                    error!(
                         "Transaction {} failed: {:?} {} {}",
                         id,
                         tx.status,
@@ -762,39 +760,22 @@ pub fn create_transfer(
                             .display()
                     );
 
-                        Err(anyhow!(
-                            "Transaction {} failed: {:?} {} {}",
-                            id,
-                            tx.status,
-                            tx.invalid_reason.as_deref().unwrap_or(""),
-                            tx.finalize
-                                .as_ref()
-                                .and_then(|f| f.result.any_reject())
-                                .display()
-                        ))
-                    };
-                }
-                None => {
-                    info!("Transaction {} is still pending...", id);
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
+                    Err(anyhow!(
+                        "Transaction {} failed: {:?} {} {}",
+                        id,
+                        tx.status,
+                        tx.invalid_reason.as_deref().unwrap_or(""),
+                        tx.finalize
+                            .as_ref()
+                            .and_then(|f| f.result.any_reject())
+                            .display()
+                    ))
+                };
+            }
+            None => {
+                trace!("Transaction {} is still pending...", id);
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
         }
     }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct TransferOutput {
-    pub statement: StealthTransferStatement,
-    pub lock_id: WalletLockId,
-    pub resource_address: ResourceAddress,
-    pub account_component_address: ComponentAddress,
-    pub required_signer_key_branch: KeyBranch,
-    pub seal_signer_key_id: KeyId,
-    pub utxo_spend_keys: Vec<StealthUtxoSpendKeyId>,
-}
-
-pub struct BalanceStuff {
-    pub balances: Vec<BalanceEntry>,
-    pub utxos: Vec<StealthOutputInfo>,
 }

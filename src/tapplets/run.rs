@@ -1,8 +1,9 @@
 // Copyright 2025 The Tari Project
 // SPDX-License-Identifier: BSD-3-Clause
 
+use crate::transfer::UnsignedTransactionData;
 use crate::wallet::{
-    Sdk, Wallet, create_transfer, create_transfer_transaction, submit_transaction,
+    Sdk, Wallet, create_transfer, create_transfer_transaction, sign_transaction, submit_transaction,
     wait_for_transaction_to_finalize,
 };
 use async_trait::async_trait;
@@ -151,10 +152,12 @@ impl MinotariTappletApiV1 for OotleApiProvider {
         )?;
         let unsigned_tx = create_transfer_transaction(&w, w.network(), &transfer)?;
 
-        let signed_tx = w.signer_api().sign(
-            transfer.required_signer_key_id,
-            unsigned_tx.authorized_sealed_signer().build(),
-        )?;
+        let signed_tx = sign_transaction(&w, UnsignedTransactionData {
+            transaction: unsigned_tx,
+            lock_id: transfer.lock_id,
+            utxo_spend_keys: transfer.utxo_spend_keys.clone(),
+            seal_signer_key_id: transfer.seal_signer_key_id,
+        })?;
 
         let id = submit_transaction(&w, signed_tx, None, Some(transfer.lock_id)).await?;
         info!("Appended data to slot '{}' in transaction {}", slot, id);
