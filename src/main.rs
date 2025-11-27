@@ -268,12 +268,48 @@ enum TappletCommand {
 async fn main() -> Result<(), anyhow::Error> {
     // Initialize tracing with environment-based configuration
     // Set log level via RUST_LOG env var (e.g., RUST_LOG=debug or RUST_LOG=ootle_wallet_cli=trace)
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // Set log file via RUST_LOG_FILE env var (e.g., RUST_LOG_FILE=ootle.log)
+
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    // Create the error layer for capturing error context
+    let error_layer = tracing_error::ErrorLayer::default();
+
+    // Check if RUST_LOG_FILE is set
+    if let Ok(log_file) = std::env::var("RUST_LOG_FILE") {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_file)
+            .context(format!("Failed to open log file: {}", log_file))?;
+
+        let fmt_layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::sync::Mutex::new(file))
+            .with_ansi(false); // Disable colors in file output
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(error_layer)
+            .with(fmt_layer)
+            .init();
+    } else {
+        let fmt_layer = tracing_subscriber::fmt::layer();
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(error_layer)
+            .with(fmt_layer)
+            .init();
+    }
+
+    // Install color-eyre for better error reporting with backtraces
+    if let Err(e) = color_eyre::install() {
+        eprintln!("Warning: Failed to install color-eyre: {}", e);
+    }
 
     let cli = Cli::parse();
 

@@ -5,7 +5,7 @@ use crate::models::BalanceEntry;
 use anyhow::Context;
 use anyhow::anyhow;
 use std::collections::{HashMap, HashSet};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, instrument, trace};
 use std::time::Duration;
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_engine_types::template_lib_models::{
@@ -199,6 +199,7 @@ impl Wallet {
         })
     }
 
+    #[instrument(skip(self), err)]
     pub async fn check_indexer_connection(&self) -> anyhow::Result<()> {
         debug!("Checking indexer connection...");
         self.sdk()
@@ -213,6 +214,7 @@ impl Wallet {
         Ok(())
     }
 
+    #[instrument(skip(self), err)]
     pub async fn refresh_account(&self, account_address: ComponentAddress) -> anyhow::Result<bool> {
         debug!("Refreshing account: {}", account_address);
         let updated = AccountScanner::new(self.wallet_event_notifier.clone(), self.sdk().clone())
@@ -230,6 +232,7 @@ impl Wallet {
         Ok(updated)
     }
 
+    #[instrument(skip(self, account), fields(account = %account.component_address()), err)]
     pub async fn scan_for_utxos(&self, account: AccountWithAddress) -> anyhow::Result<()> {
         info!("Scanning for UTXOs for account: {}", account);
         let scanner = UtxoScanner::new(self.sdk().clone(), self.wallet_event_notifier.clone());
@@ -677,6 +680,7 @@ pub fn create_transfer_transaction(
     Ok(transaction)
 }
 
+#[instrument(skip(sdk, transaction), err)]
 pub async fn submit_transaction(
     sdk: &Sdk,
     transaction: Transaction,
