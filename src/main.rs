@@ -15,7 +15,7 @@ use crate::transfer::{TransferCommand, handle_transfer_command};
 use crate::wallet::{BalanceStuff, Sdk, Wallet};
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_crypto::tari_utilities::hex::from_hex;
 use tari_crypto::tari_utilities::{ByteArray, SafePassword};
@@ -23,7 +23,7 @@ use tari_engine_types::template_lib_models::ResourceAddress;
 use tari_ootle_common_types::Network;
 use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_wallet_sdk::constants::XTR;
-use tari_ootle_wallet_sdk::models::{AccountWithAddress, EpochBirthday};
+use tari_ootle_wallet_sdk::models::{AccountWithAddress, EpochBirthday, WalletLockId};
 use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 use tari_template_lib_types::Amount;
@@ -53,6 +53,7 @@ struct CommonArgs {
         short = 'd',
         long,
         help = "Path to the database file",
+        env = "OOTLE_DB_PATH",
         default_value = "data/wallet.sqlite"
     )]
     pub database_file: Box<Path>,
@@ -60,6 +61,7 @@ struct CommonArgs {
         short = 'i',
         long,
         default_value = "http://217.182.93.147:50124/",
+        env = "OOTLE_INDEXER_URL",
         help = "URL of an Ootle indexer API"
     )]
     pub indexer_url: Url,
@@ -67,6 +69,7 @@ struct CommonArgs {
         short = 'n',
         long,
         default_value = "MainNet",
+        env = "OOTLE_NETWORK",
         help = "Network to use (mainnet, igor, localnet, etc)"
     )]
     pub network: Network,
@@ -150,6 +153,17 @@ enum Command {
     },
     #[clap(subcommand)]
     Transfer(TransferCommand),
+    #[clap(alias = "cancel")]
+    CancelTransfer {
+        #[arg(short = 'l', long, help = "The lock ID of the transfer to cancel")]
+        lock_id: Option<WalletLockId>,
+        #[arg(
+            short = 'p',
+            long,
+            help = "Path to the transfer JSON file to cancel the transfer for"
+        )]
+        transfer_path: Option<PathBuf>,
+    },
     /// Create new seed words
     CreateSeedWords,
     /// Show wallet info
@@ -359,6 +373,40 @@ async fn main() -> Result<(), anyhow::Error> {
                 "✔️ Resource {} added to account '{}'",
                 resource_address,
                 account.account().name.as_deref().unwrap_or("<unnamed>")
+            );
+        }
+        Command::CancelTransfer {
+            lock_id,
+            transfer_path,
+        } => {
+            let lock_id = match (lock_id, transfer_path) {
+                (Some(id), None) => id,
+                (None, Some(path)) => {
+                    let transfer: TransferOutput = serde_json::from_reader(
+                        std::fs::File::open(&path).context("failed to open transfer file")?,
+                    )
+                    .context("failed to parse transfer file")?;
+                    transfer.lock_id
+                }
+                (Some(_), Some(_)) => {
+                    anyhow::bail!("Specify either lock_id or transfer_path, not both");
+                }
+                (None, None) => {
+                    anyhow::bail!(
+                        "You must specify either lock_id or transfer_path to cancel a transfer"
+                    );
+                }
+            };
+
+            wallet
+                .sdk()
+                .locks_api()
+                .release_lock(lock_id)
+                .context("failed to release transfer lock")?;
+            cli_println!(
+                ANSI_GREEN,
+                "✔️ Transfer with lock ID {} cancelled successfully",
+                lock_id
             );
         }
         Command::Scan { account_name } => {

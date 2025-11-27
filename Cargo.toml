@@ -36,7 +36,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-error = "0.2"
 color-eyre = "0.6"
-clap = { version = "4.5.48", features = ["derive"] }
+clap = { version = "4.5.48", features = ["derive", "env"] }
 tokio = { version = "1.47.1", features = [
     "macros",
     "rt-multi-thread",

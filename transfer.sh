@@ -9,11 +9,11 @@ set -e
 
 
 # Example usage of the transfer commands in the CLI tool.
-ADDRESS=xtr_loc_15rdukntc5swqk2kqmyn004tj4ap83ekyvcahzwstxfql22cpfsm9fxq0ax6qsm2ylh3kfadrkhnvp5xtcgszvtmpswk4a64les34kcgkr3aa5
+ADDRESS=otl_loc_1pr4383l9dkhlz6m2yach2lvdrpnkx6jmhqpua53fmsuftk205f7q3x73ces8lcepmphmkhpmn4v957wmrnny4lp2n6p9s8dunuxqzyqlxu87n
 AMOUNT=10000000
 
 cargo run --release -- --network=localnet --password=123 -ihttp://localhost:12017  \
-  transfer create --to-address=$ADDRESS --amount=$AMOUNT --num-outputs=7 --message="Transfer" --fee-amount=1100 -o /tmp/transfer.json
+  transfer create --to-address=$ADDRESS --amount=$AMOUNT --num-outputs=7 --message="Transfer" --fee-amount=1300 -o /tmp/transfer.json
 cargo run --release -- --network=localnet --password=123 -ihttp://localhost:12017  transfer transaction /tmp/transfer.json /tmp/tx1.json
 cargo run --release -- --network=localnet --password=123 -ihttp://localhost:12017  transfer sign /tmp/tx1.json /tmp/tx1_signed.json
 cargo run --release -- --network=localnet --password=123 -ihttp://localhost:12017  transfer send /tmp/tx1_signed.json
