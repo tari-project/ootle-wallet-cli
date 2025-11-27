@@ -266,7 +266,15 @@ enum TappletCommand {
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    env_logger::init();
+    // Initialize tracing with environment-based configuration
+    // Set log level via RUST_LOG env var (e.g., RUST_LOG=debug or RUST_LOG=ootle_wallet_cli=trace)
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let cli = Cli::parse();
 
     let mut wallet = init_wallet(&cli.common).context("Failed to initialize wallet SDK")?;

@@ -4,8 +4,8 @@
 use crate::models::BalanceEntry;
 use anyhow::Context;
 use anyhow::anyhow;
-use log::*;
 use std::collections::{HashMap, HashSet};
+use tracing::{debug, error, info, trace};
 use std::time::Duration;
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_engine_types::template_lib_models::{
@@ -200,29 +200,48 @@ impl Wallet {
     }
 
     pub async fn check_indexer_connection(&self) -> anyhow::Result<()> {
+        debug!("Checking indexer connection...");
         self.sdk()
             .get_network_interface()
             .wait_until_ready()
             .await
-            .map_err(|e| anyhow!("Failed to connect to indexer: {}", e))
+            .map_err(|e| {
+                error!("Failed to connect to indexer: {}", e);
+                anyhow!("Failed to connect to indexer: {}", e)
+            })?;
+        info!("Successfully connected to indexer");
+        Ok(())
     }
 
     pub async fn refresh_account(&self, account_address: ComponentAddress) -> anyhow::Result<bool> {
+        debug!("Refreshing account: {}", account_address);
         let updated = AccountScanner::new(self.wallet_event_notifier.clone(), self.sdk().clone())
             .refresh_account(account_address)
             .await
-            .map_err(|e| anyhow!("Failed to refresh account: {}", e))?;
+            .map_err(|e| {
+                error!("Failed to refresh account {}: {}", account_address, e);
+                anyhow!("Failed to refresh account: {}", e)
+            })?;
+        if updated {
+            info!("Account {} was updated", account_address);
+        } else {
+            debug!("Account {} had no updates", account_address);
+        }
         Ok(updated)
     }
 
     pub async fn scan_for_utxos(&self, account: AccountWithAddress) -> anyhow::Result<()> {
+        info!("Scanning for UTXOs for account: {}", account);
         let scanner = UtxoScanner::new(self.sdk().clone(), self.wallet_event_notifier.clone());
         let resources = self
             .sdk()
             .accounts_api()
             .get_associated_stealth_resources(account.component_address())?;
+        debug!("Found {} resources associated with account", resources.len());
+
         let mut num_found_total = 0;
         for resource_addr in resources {
+            trace!("Scanning resource: {}", resource_addr);
             // Ensure that the resource is in the local database
             let resource = self
                 .sdk
@@ -237,7 +256,7 @@ impl Wallet {
                 .scan_and_enqueue_utxos(&account, &resource_addr)
                 .await?;
             if stats.num_potential_recoveries > 0 {
-                log::info!(
+                info!(
                     "Found {} potential stealth UTXOs for account {} resource {}",
                     stats.num_potential_recoveries,
                     account,
@@ -248,10 +267,13 @@ impl Wallet {
         }
 
         if num_found_total > 0 {
+            info!("Processing {} potential UTXO recoveries", num_found_total);
             UtxoRecovery::new(self.sdk().clone())
                 .with_notify(self.wallet_event_notifier.clone())
                 .process_utxo_validation_queue()
                 .await?;
+        } else {
+            debug!("No UTXOs found to recover");
         }
         Ok(())
     }
@@ -279,6 +301,7 @@ impl Wallet {
         name: &str,
         set_default: bool,
     ) -> anyhow::Result<AccountWithAddress> {
+        info!("Creating new account: {}", name);
         self.sdk
             .initialize_cipher_seed(CipherSeedRestore::CreateNewIfRequired)?;
         let address = self.sdk.key_manager_api().next_account_address()?;
@@ -286,6 +309,7 @@ impl Wallet {
             .sdk
             .accounts_api()
             .create_account(Some(name), set_default, address)?;
+        info!("Account '{}' created successfully", name);
         Ok(account)
     }
 
@@ -662,13 +686,20 @@ pub async fn submit_transaction(
     let id = sdk
         .transaction_api()
         .insert_new_transaction(transaction, new_account_data, false)?;
+    info!("Transaction created with ID: {}", id);
+
     if let Some(lock_id) = lock_id {
+        debug!("Setting lock ID for transaction: {}", id);
         sdk.transaction_api()
             .locks_set_transaction_id(lock_id, id)?;
     }
+
+    debug!("Submitting transaction: {}", id);
     if !sdk.transaction_api().submit_transaction(id).await? {
+        error!("Failed to submit transaction: {}", id);
         return Err(anyhow!("Failed to submit transaction {}", id));
     }
+    info!("Transaction {} submitted successfully", id);
 
     Ok(id)
 
@@ -680,6 +711,7 @@ pub async fn wait_for_transaction_to_finalize(
     id: TransactionId,
     // cancellation_token: Option<Notify<()>>,
 ) -> anyhow::Result<WalletTransaction> {
+    debug!("Waiting for transaction {} to finalize", id);
     loop {
         // TODO: add cancelation support
         // if let Some(token) = &cancellation_token {
@@ -697,6 +729,16 @@ pub async fn wait_for_transaction_to_finalize(
                     info!("Transaction {} was accepted", id);
                     Ok(tx)
                 } else {
+                    error!(
+                        "Transaction {} failed: {:?} {} {}",
+                        id,
+                        tx.status,
+                        tx.invalid_reason.as_deref().unwrap_or(""),
+                        tx.finalize
+                            .as_ref()
+                            .and_then(|f| f.result.any_reject())
+                            .display()
+                    );
                     Err(anyhow!(
                         "Transaction {} failed: {:?} {} {}",
                         id,
@@ -710,7 +752,7 @@ pub async fn wait_for_transaction_to_finalize(
                 };
             }
             None => {
-                info!("Transaction {} is still pending...", id);
+                trace!("Transaction {} is still pending...", id);
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
         }
