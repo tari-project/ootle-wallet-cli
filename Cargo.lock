@@ -3333,7 +3333,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 [[package]]
 name = "tari_bor"
 version = "0.11.1"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "borsh",
  "ciborium",
@@ -3424,7 +3424,7 @@ dependencies = [
 [[package]]
 name = "tari_consensus_types"
 version = "0.16.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "borsh",
  "serde",
@@ -3463,7 +3463,7 @@ dependencies = [
 [[package]]
 name = "tari_engine_types"
 version = "0.16.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "base64 0.21.7",
  "blake2",
@@ -3505,7 +3505,7 @@ dependencies = [
 [[package]]
 name = "tari_indexer_client"
 version = "0.16.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "anyhow",
  "bounded-vec",
@@ -3572,7 +3572,7 @@ dependencies = [
 [[package]]
 name = "tari_ootle_address"
 version = "0.16.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "bech32",
  "serde",
@@ -3586,7 +3586,7 @@ dependencies = [
 [[package]]
 name = "tari_ootle_common_types"
 version = "0.16.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "blake2",
  "borsh",
@@ -3613,7 +3613,7 @@ dependencies = [
 [[package]]
 name = "tari_ootle_storage"
 version = "0.16.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "anyhow",
  "bitflags 2.9.4",
@@ -3638,7 +3638,7 @@ dependencies = [
 [[package]]
 name = "tari_ootle_wallet_crypto"
 version = "0.16.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "argon2 0.5.3",
  "blake2",
@@ -3661,7 +3661,7 @@ dependencies = [
 [[package]]
 name = "tari_ootle_wallet_sdk"
 version = "0.16.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "anyhow",
  "blake2",
@@ -3695,7 +3695,7 @@ dependencies = [
 [[package]]
 name = "tari_ootle_wallet_sdk_services"
 version = "0.16.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "anyhow",
  "futures",
@@ -3721,7 +3721,7 @@ dependencies = [
 [[package]]
 name = "tari_ootle_wallet_storage_sqlite"
 version = "0.16.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "bigdecimal",
  "diesel",
@@ -3770,7 +3770,7 @@ dependencies = [
 [[package]]
 name = "tari_state_tree"
 version = "0.16.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "log",
  "serde",
@@ -3785,7 +3785,7 @@ dependencies = [
 [[package]]
 name = "tari_template_abi"
 version = "0.14.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "serde",
  "tari_bor",
@@ -3794,7 +3794,7 @@ dependencies = [
 [[package]]
 name = "tari_template_builtin"
 version = "0.16.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "tari_template_lib",
 ]
@@ -3802,7 +3802,7 @@ dependencies = [
 [[package]]
 name = "tari_template_lib"
 version = "0.14.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "borsh",
  "serde",
@@ -3815,7 +3815,7 @@ dependencies = [
 [[package]]
 name = "tari_template_lib_types"
 version = "0.14.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "bnum",
  "borsh",
@@ -3828,7 +3828,7 @@ dependencies = [
 [[package]]
 name = "tari_template_macros"
 version = "0.14.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3840,7 +3840,7 @@ dependencies = [
 [[package]]
 name = "tari_transaction"
 version = "0.16.0"
-source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#1a3737043ac28324838946c1b664a66f07421856"
+source = "git+https://github.com/tari-project/tari-ootle.git?branch=development#a051a0827620d72ced006ab4140074d43aff19d6"
 dependencies = [
  "borsh",
  "hex",

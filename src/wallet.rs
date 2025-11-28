@@ -3,8 +3,8 @@
 
 use crate::models::BalanceEntry;
 use crate::transfer::UnsignedTransactionData;
-use anyhow::anyhow;
 use anyhow::Context;
+use anyhow::anyhow;
 use log::*;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -13,9 +13,9 @@ use tari_engine_types::template_lib_models::{
     ComponentAddress, ResourceAddress, StealthTransferStatement, UtxoAddress,
 };
 use tari_engine_types::{FromByteType, ToByteType};
+use tari_ootle_common_types::Epoch;
 use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_common_types::optional::Optional;
-use tari_ootle_common_types::Epoch;
 use tari_ootle_common_types::{Network, SubstateRequirement};
 use tari_ootle_wallet_sdk::apis::confidential_transfer::UtxoInputSelection;
 use tari_ootle_wallet_sdk::apis::stealth_outputs::TransferStatementParams;
@@ -42,7 +42,7 @@ use tari_ootle_wallet_sdk_services::utxo_scanner::{UtxoRecovery, UtxoScanner};
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
 use tari_template_lib_types::{Amount, ResourceType};
-use tari_transaction::{args, Transaction, TransactionId, UnsignedTransaction};
+use tari_transaction::{Transaction, TransactionId, UnsignedTransaction, args};
 use tokio::sync::broadcast;
 
 pub struct WalletCliSpec;
@@ -345,8 +345,7 @@ impl Wallet {
             );
         }
 
-        let transaction = Transaction::builder()
-            .for_network(sdk.network().as_byte())
+        let transaction = Transaction::builder(sdk.network().as_byte())
             .with_fee_instructions_builder(|fee_builder| {
                 fee_builder
                     .call_method(XTR_FAUCET_COMPONENT_ADDRESS, "take", args![amount])
@@ -547,10 +546,12 @@ impl Wallet {
 
         // Add required Utxo spend signatures
         let signer_with_seal_commit = self.sdk.signer_api().with_context(&seal_signer_pk);
-        let unsealed = data.utxo_spend_keys.iter().try_fold(
-            data.transaction.authorized_sealed_signer().finish(),
-            |acc, key| signer_with_seal_commit.sign_with_stealth_key(key, acc),
-        )?;
+        let unsealed = data
+            .utxo_spend_keys
+            .iter()
+            .try_fold(data.transaction.finish(), |acc, key| {
+                signer_with_seal_commit.sign_with_stealth_key(key, acc)
+            })?;
 
         // Finally, sign with the seal signer
         let signed = self
@@ -589,8 +590,7 @@ impl Wallet {
             })
             .transpose()?;
 
-        let transaction = Transaction::builder()
-            .for_network(self.network().as_byte())
+        let transaction = Transaction::builder(self.network().as_byte())
             .with_fee_instructions_builder(|builder| {
                 if revealed_input_amount.is_positive() {
                     builder
