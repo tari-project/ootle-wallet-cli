@@ -5,9 +5,9 @@ use crate::{cli_println, write_to_json_file, ANSI_GREEN, ANSI_WHITE};
 use anyhow::Context;
 use clap::Subcommand;
 use std::path::Path;
+use tari_ootle_transaction::{Transaction, UnsignedTransaction};
 use tari_ootle_wallet_sdk::models::{KeyId, StealthUtxoSpendKeyId, WalletLockId};
 use tari_ootle_wallet_sdk::OotleAddress;
-use tari_transaction::{Transaction, UnsignedTransaction};
 
 #[derive(Subcommand)]
 pub enum TransferCommand {

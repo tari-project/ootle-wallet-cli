@@ -1,5 +1,4 @@
-use tari_engine_types::template_lib_models::{ResourceAddress, VaultId};
-use tari_template_lib_types::{Amount, ResourceType};
+use tari_template_lib_types::{Amount, ResourceAddress, ResourceType, VaultId};
 
 #[derive(Debug, Clone)]
 pub struct BalanceEntry {

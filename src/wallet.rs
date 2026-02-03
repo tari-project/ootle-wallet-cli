@@ -3,28 +3,27 @@
 
 use crate::models::BalanceEntry;
 use crate::transfer::UnsignedTransactionData;
-use anyhow::Context;
 use anyhow::anyhow;
+use anyhow::Context;
 use log::*;
+use ootle_byte_type::{FromByteType, ToByteType};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tari_crypto::ristretto::RistrettoSecretKey;
-use tari_engine_types::template_lib_models::{
-    ComponentAddress, ResourceAddress, StealthTransferStatement, UtxoAddress,
-};
-use tari_engine_types::{FromByteType, ToByteType};
-use tari_ootle_common_types::Epoch;
 use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_common_types::optional::Optional;
+use tari_ootle_common_types::Epoch;
 use tari_ootle_common_types::{Network, SubstateRequirement};
+use tari_ootle_transaction::{args, Transaction, TransactionId, UnsignedTransaction};
 use tari_ootle_wallet_sdk::apis::confidential_transfer::UtxoInputSelection;
 use tari_ootle_wallet_sdk::apis::stealth_outputs::TransferStatementParams;
-use tari_ootle_wallet_sdk::apis::stealth_transfer::{PayTo, StealthOutputToCreate};
+use tari_ootle_wallet_sdk::apis::stealth_transfer::StealthOutputToCreate;
 use tari_ootle_wallet_sdk::cipher_seed::CipherSeedRestore;
 use tari_ootle_wallet_sdk::constants::{
     XTR, XTR_FAUCET_COMPONENT_ADDRESS, XTR_FAUCET_VAULT_ADDRESS,
 };
 use tari_ootle_wallet_sdk::crypto::memo::Memo;
+use tari_ootle_wallet_sdk::crypto::pay_to::PayTo;
 use tari_ootle_wallet_sdk::local_key_store::LocalKeyStore;
 use tari_ootle_wallet_sdk::models::{
     AccountWithAddress, KeyBranch, KeyId, KeyType, NewAccountData, StealthUtxoSpendKeyId,
@@ -41,8 +40,10 @@ use tari_ootle_wallet_sdk_services::notify::Notify;
 use tari_ootle_wallet_sdk_services::utxo_scanner::{UtxoRecovery, UtxoScanner};
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
-use tari_template_lib_types::{Amount, ResourceType};
-use tari_transaction::{Transaction, TransactionId, UnsignedTransaction, args};
+use tari_template_lib_types::stealth::StealthTransferStatement;
+use tari_template_lib_types::{
+    Amount, ComponentAddress, ResourceAddress, ResourceType, UtxoAddress,
+};
 use tokio::sync::broadcast;
 
 pub struct WalletCliSpec;
@@ -608,7 +609,7 @@ impl Wallet {
             .with_inputs(utxo_inputs)
             .with_inputs(maybe_account_input.map(Into::into))
             .with_inputs(maybe_vault_input.map(|v| v.id.into()))
-            .build_unsigned_transaction();
+            .build_unsigned();
         Ok(transaction)
     }
 
