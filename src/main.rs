@@ -18,7 +18,6 @@ use std::path::{Path, PathBuf};
 use tari_crypto::ristretto::RistrettoSecretKey;
 use tari_crypto::tari_utilities::hex::from_hex;
 use tari_crypto::tari_utilities::{ByteArray, SafePassword};
-use tari_engine_types::template_lib_models::ResourceAddress;
 use tari_ootle_common_types::displayable::Displayable;
 use tari_ootle_common_types::Network;
 use tari_ootle_wallet_sdk::constants::XTR;
@@ -26,7 +25,7 @@ use tari_ootle_wallet_sdk::models::{AccountWithAddress, EpochBirthday, WalletLoc
 use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
 use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
 use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
-use tari_template_lib_types::Amount;
+use tari_template_lib_types::{Amount, ResourceAddress};
 use termimad::crossterm::style::Color;
 use url::Url;
 use zeroize::Zeroizing;
@@ -412,7 +411,7 @@ async fn main() -> Result<(), anyhow::Error> {
             if !utxos.is_empty() {
                 cli_println!();
                 cli_println!(ANSI_BLUE, "UTXOs:");
-                let resource = wallet.sdk().resources_api().get(&XTR).unwrap();
+                let resource = wallet.sdk().resources_api().get(&XTR)?;
                 let mut table = Table::new();
                 table.set_titles(vec!["Commitment", "Value", "Message"]);
 
