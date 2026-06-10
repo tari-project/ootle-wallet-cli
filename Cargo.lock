@@ -2188,6 +2188,7 @@ dependencies = [
  "spinners",
  "tari_common_types",
  "tari_crypto",
+ "tari_ootle_common_types",
  "tari_template_lib_types",
  "termimad",
  "tokio",

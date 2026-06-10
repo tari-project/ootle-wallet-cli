@@ -32,8 +32,10 @@ use tari_common_types::seeds::mnemonic::{Mnemonic, MnemonicLanguage};
 use tari_common_types::seeds::seed_words::SeedWords;
 use tari_crypto::tari_utilities::hex::to_hex;
 use tari_crypto::tari_utilities::{ByteArray, Hidden, SafePassword};
-use tari_template_lib_types::Amount;
+use tari_ootle_common_types::engine_types::indexed_value::IndexedWellKnownTypes;
+use tari_ootle_common_types::engine_types::substate::SubstateId;
 use tari_template_lib_types::constants::{TARI_TOKEN, XTR_FAUCET_AMOUNT};
+use tari_template_lib_types::{Amount, ComponentAddress, ResourceAddress, ResourceType, VaultId};
 use termimad::crossterm::style::Color;
 use url::Url;
 use zeroize::Zeroizing;
@@ -180,6 +182,30 @@ enum Command {
         #[arg(
             long,
             help = "Address to show balances for, instead of a wallet account",
+            conflicts_with = "account_name"
+        )]
+        address: Option<Address>,
+    },
+    /// List the on-chain vaults of an account
+    #[clap(alias = "vaults")]
+    ListVaults {
+        #[arg(short, long, help = "Account name. Defaults to the default account")]
+        account_name: Option<String>,
+        #[arg(
+            long,
+            help = "Address to list vaults for, instead of a wallet account",
+            conflicts_with = "account_name"
+        )]
+        address: Option<Address>,
+    },
+    /// List the resources held by an account
+    #[clap(alias = "resources")]
+    ListResources {
+        #[arg(short, long, help = "Account name. Defaults to the default account")]
+        account_name: Option<String>,
+        #[arg(
+            long,
+            help = "Address to list resources for, instead of a wallet account",
             conflicts_with = "account_name"
         )]
         address: Option<Address>,
@@ -396,22 +422,132 @@ async fn main() -> Result<(), anyhow::Error> {
             account_name,
             address,
         } => {
-            // An address carries its own network, so it can be queried without a wallet
-            let (address, network) = match address {
-                Some(address) => {
-                    let network = address.network();
-                    (address, network)
-                }
-                None => {
-                    let network = resolve_network(&cli.common, &store)?;
-                    let account = store.get_account(account_name.as_deref())?;
-                    let address = account.address.parse().map_err(|e| {
-                        anyhow::anyhow!("invalid address in account '{}': {e}", account.name)
-                    })?;
-                    (address, network)
-                }
-            };
+            let (address, network) =
+                resolve_query_address(&cli.common, &store, account_name.as_deref(), address)?;
             show_balances(&cli.common, &store, network, &address).await?;
+        }
+        Command::ListVaults {
+            account_name,
+            address,
+        } => {
+            let (address, network) =
+                resolve_query_address(&cli.common, &store, account_name.as_deref(), address)?;
+            let provider = connect_readonly(&cli.common, &store, network).await?;
+            let component_address = address.to_account_address();
+            let Some(vaults) = fetch_account_vaults(&provider, component_address).await? else {
+                cli_println!(
+                    ANSI_WHITE,
+                    "Account {} is not on-chain yet. Fund it to create it.",
+                    component_address
+                );
+                return Ok(());
+            };
+
+            cli_println!(ANSI_BLUE, "Vaults for account:");
+            cli_println!(ANSI_BLUE, "-----------------------------------");
+            cli_println!(ANSI_WHITE, "Address: {}", address);
+            cli_println!(ANSI_WHITE, "Component: {}", component_address);
+            cli_println!(ANSI_BLUE, "-----------------------------------");
+            cli_println!();
+
+            if vaults.is_empty() {
+                cli_println!(ANSI_WHITE, "No vaults");
+                return Ok(());
+            }
+            let mut table = Table::new();
+            table.set_titles(vec![
+                "Vault", "Resource", "Symbol", "Type", "Balance", "Locked",
+            ]);
+            for vault in vaults {
+                let resource = fetch_resource_info(&provider, vault.resource_address).await;
+                table.add_row(table_row![
+                    vault.vault_id,
+                    vault.resource_address,
+                    resource.symbol,
+                    vault.resource_type,
+                    vault
+                        .balance
+                        .to_decimal_string(resource.divisibility.into()),
+                    vault
+                        .locked_balance
+                        .to_decimal_string(resource.divisibility.into())
+                ]);
+            }
+            table.print_stdout();
+        }
+        Command::ListResources {
+            account_name,
+            address,
+        } => {
+            let (address, network) =
+                resolve_query_address(&cli.common, &store, account_name.as_deref(), address)?;
+            let provider = connect_readonly(&cli.common, &store, network).await?;
+            let component_address = address.to_account_address();
+            let Some(vaults) = fetch_account_vaults(&provider, component_address).await? else {
+                cli_println!(
+                    ANSI_WHITE,
+                    "Account {} is not on-chain yet. Fund it to create it.",
+                    component_address
+                );
+                return Ok(());
+            };
+
+            cli_println!(ANSI_BLUE, "Resources for account:");
+            cli_println!(ANSI_BLUE, "-----------------------------------");
+            cli_println!(ANSI_WHITE, "Address: {}", address);
+            cli_println!(ANSI_WHITE, "Component: {}", component_address);
+            cli_println!(ANSI_BLUE, "-----------------------------------");
+            cli_println!();
+
+            if vaults.is_empty() {
+                cli_println!(ANSI_WHITE, "No resources");
+                return Ok(());
+            }
+            // Aggregate balances across the account's vaults per resource
+            let mut resources: std::collections::BTreeMap<_, ResourceSummary> =
+                std::collections::BTreeMap::new();
+            for vault in vaults {
+                let entry =
+                    resources
+                        .entry(vault.resource_address)
+                        .or_insert_with(|| ResourceSummary {
+                            resource_type: vault.resource_type,
+                            balance: Amount::zero(),
+                            locked_balance: Amount::zero(),
+                            num_vaults: 0,
+                        });
+                entry.balance += vault.balance;
+                entry.locked_balance += vault.locked_balance;
+                entry.num_vaults += 1;
+            }
+
+            let mut table = Table::new();
+            table.set_titles(vec![
+                "Resource",
+                "Symbol",
+                "Type",
+                "Divisibility",
+                "Balance",
+                "Locked",
+                "#Vaults",
+            ]);
+            for (resource_address, summary) in resources {
+                let resource = fetch_resource_info(&provider, resource_address).await;
+                table.add_row(table_row![
+                    resource_address,
+                    resource.symbol,
+                    summary.resource_type,
+                    resource.divisibility,
+                    summary
+                        .balance
+                        .to_decimal_string(resource.divisibility.into()),
+                    summary
+                        .locked_balance
+                        .to_decimal_string(resource.divisibility.into()),
+                    summary.num_vaults
+                ]);
+            }
+            table.print_stdout();
         }
         Command::Transfer {
             from_account,
@@ -815,32 +951,123 @@ async fn show_balances(
     let mut table = Table::new();
     table.set_titles(vec!["Resource", "Balance"]);
     for (resource_address, balance) in balances {
-        let (symbol, divisibility) = if resource_address == TARI_TOKEN {
-            // The TARI token is built-in and has no fetchable resource substate
-            ("XTR".to_string(), 6)
-        } else {
-            // Fetch the resource for its symbol and divisibility. Fall back to raw values if
-            // the resource cannot be fetched.
-            let resource = provider
-                .get_substate(resource_address)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|s| s.into_substate_value().into_resource());
-            let symbol = resource
-                .as_ref()
-                .and_then(|r| r.token_symbol().map(|s| s.to_owned()))
-                .unwrap_or_else(|| resource_address.to_string());
-            let divisibility = resource.as_ref().map(|r| r.divisibility()).unwrap_or(0);
-            (symbol, divisibility)
-        };
+        let resource = fetch_resource_info(&provider, resource_address).await;
         table.add_row(table_row![
-            symbol,
-            balance.to_decimal_string(divisibility.into())
+            resource.symbol,
+            balance.to_decimal_string(resource.divisibility.into())
         ]);
     }
     table.print_stdout();
     Ok(())
+}
+
+/// Resolves the address and network to query: an explicit address carries its own network
+/// and needs no wallet; otherwise the named (or default) wallet account is used.
+fn resolve_query_address(
+    common: &CommonArgs,
+    store: &WalletStore,
+    account_name: Option<&str>,
+    address: Option<Address>,
+) -> anyhow::Result<(Address, Network)> {
+    match address {
+        Some(address) => {
+            let network = address.network();
+            Ok((address, network))
+        }
+        None => {
+            let network = resolve_network(common, store)?;
+            let account = store.get_account(account_name)?;
+            let address = account.address.parse().map_err(|e| {
+                anyhow::anyhow!("invalid address in account '{}': {e}", account.name)
+            })?;
+            Ok((address, network))
+        }
+    }
+}
+
+struct VaultRow {
+    vault_id: VaultId,
+    resource_address: ResourceAddress,
+    resource_type: ResourceType,
+    balance: Amount,
+    locked_balance: Amount,
+}
+
+struct ResourceSummary {
+    resource_type: ResourceType,
+    balance: Amount,
+    locked_balance: Amount,
+    num_vaults: usize,
+}
+
+/// Fetches the vaults of an account by walking the vault IDs in its component state.
+/// Returns `None` if the account component does not exist on-chain.
+async fn fetch_account_vaults<W>(
+    provider: &IndexerProvider<W>,
+    component_address: ComponentAddress,
+) -> anyhow::Result<Option<Vec<VaultRow>>> {
+    let Some(substate) = provider.get_substate(component_address).await? else {
+        return Ok(None);
+    };
+    let component = substate.substate_value().component().ok_or_else(|| {
+        anyhow::anyhow!("expected a component substate for account {component_address}")
+    })?;
+    let indexed = IndexedWellKnownTypes::from_value(component.state())
+        .map_err(|e| anyhow::anyhow!("failed to index account state: {e}"))?;
+
+    let mut vaults = Vec::with_capacity(indexed.vault_ids().len());
+    for vault_id in indexed.vault_ids() {
+        let Some(vault_substate) = provider.get_substate(SubstateId::Vault(*vault_id)).await?
+        else {
+            log::warn!("Vault {vault_id} referenced by account {component_address} not found");
+            continue;
+        };
+        let Some(vault) = vault_substate.into_substate_value().into_vault() else {
+            log::warn!("Substate {vault_id} is not a vault");
+            continue;
+        };
+        vaults.push(VaultRow {
+            vault_id: *vault_id,
+            resource_address: *vault.resource_address(),
+            resource_type: vault.resource_type(),
+            balance: vault.balance(),
+            locked_balance: vault.locked_balance(),
+        });
+    }
+    Ok(Some(vaults))
+}
+
+struct ResourceInfo {
+    symbol: String,
+    divisibility: u8,
+}
+
+/// Fetches a resource's token symbol and divisibility for display, falling back to the raw
+/// resource address and zero divisibility if the resource cannot be fetched.
+async fn fetch_resource_info<W>(
+    provider: &IndexerProvider<W>,
+    resource_address: ResourceAddress,
+) -> ResourceInfo {
+    if resource_address == TARI_TOKEN {
+        // The TARI token is built-in and has no fetchable resource substate
+        return ResourceInfo {
+            symbol: "XTR".to_string(),
+            divisibility: 6,
+        };
+    }
+    let resource = provider
+        .get_substate(resource_address)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| s.into_substate_value().into_resource());
+    ResourceInfo {
+        symbol: resource
+            .as_ref()
+            .and_then(|r| r.token_symbol().map(|s| s.to_owned()))
+            .unwrap_or_else(|| resource_address.to_string()),
+        divisibility: resource.as_ref().map(|r| r.divisibility()).unwrap_or(0),
+    }
 }
 
 /// Returns the wallet's network from the database, validating any explicitly provided

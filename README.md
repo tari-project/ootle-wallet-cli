@@ -91,7 +91,7 @@ ootle faucet
 ootle faucet -a alice
 ```
 
-### Check balances
+### Check balances, vaults and resources
 
 ```bash
 # Default account
@@ -100,6 +100,14 @@ ootle balance
 # A specific account, or any address
 ootle balance -a alice
 ootle balance --address otl_esm_1...
+
+# List the on-chain vaults of an account (vault ID, resource, balances)
+ootle vaults
+ootle vaults -a alice
+
+# List the resources held by an account, aggregated across its vaults
+ootle resources
+ootle resources --address otl_esm_1...
 ```
 
 ### Transfer

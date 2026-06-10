@@ -9,9 +9,11 @@ license = "BSD-3-Clause"
 [dependencies]
 ootle-rs = { git = "https://github.com/tari-project/tari-ootle.git", tag = "v0.33.4" }
 tari_template_lib_types = { git = "https://github.com/tari-project/tari-ootle.git", tag = "v0.33.4" }
+tari_ootle_common_types = { git = "https://github.com/tari-project/tari-ootle.git", tag = "v0.33.4" }
 
 #ootle-rs = { path = "../dan/crates/wallet/ootle-rs" }
 #tari_template_lib_types = { path = "../dan/crates/template_lib_types" }
+#tari_ootle_common_types = { path = "../dan/crates/common_types" }
 
 tari_crypto = { version = "0.23", features = ["std"] }
 tari_common_types = "5.4.0-pre.3"
