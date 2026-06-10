@@ -3,9 +3,11 @@
 A command-line wallet for the [Tari Ootle](https://www.tari.com/) network, built on
 [ootle-rs](https://github.com/tari-project/tari-ootle/tree/development/crates/wallet/ootle-rs).
 
-Account keys and transaction history are persisted in a local sqlite database
-(`data/wallet.sqlite` by default). Secret keys are stored unencrypted - protect the
-database file accordingly.
+The wallet keeps its state in a local sqlite database (`data/wallet.sqlite` by default):
+settings (network, indexer URL), accounts and transaction history. No secret keys are
+stored - the wallet holds a single cipher seed, enciphered with an optional passphrase
+(Argon2-based KDF), and account keys are derived from it on demand. Key derivation matches
+the official Ootle wallet, so seed words are interchangeable between the two.
 
 ## Installation
 
@@ -27,29 +29,53 @@ Common options (apply to all commands):
 | Option | Env | Default | Description |
 | --- | --- | --- | --- |
 | `-d, --database-file` | `OOTLE_DB_PATH` | `data/wallet.sqlite` | Path to the wallet database |
-| `-n, --network` | `OOTLE_NETWORK` | `esmeralda` | Network (mainnet, esmeralda, localnet, ...) |
-| `-i, --indexer-url` | `OOTLE_INDEXER_URL` | per-network default | URL of an Ootle indexer API |
+| `-n, --network` | `OOTLE_NETWORK` | - | Network, used during `setup` (stored in the database) |
+| `-i, --indexer-url` | `OOTLE_INDEXER_URL` | per-network default | Override the indexer API URL |
+| `-p, --password` | `OOTLE_PASSWORD` | - | Wallet passphrase (prompted when required) |
 
-### Create an account
+### Initial setup
 
-Creates a new account, funds it from the testnet faucet (skipped on mainnet or with
-`--no-fund`) and outputs the account keys, including the secret account and view keys:
+Runs you through the initial wallet setup: network, indexer URL, an optional passphrase,
+new (or restored) seed words, the first account, and faucet funding on testnets:
 
 ```bash
-ootle create-account --name alice
+ootle setup
 
-# Also export the keys to a JSON file
-ootle create-account --name alice -o alice.json
+# Non-interactive
+ootle -n esmeralda setup --account-name main --no-fund
+
+# Restore a wallet from existing seed words
+ootle setup --restore
+```
+
+The network and indexer URL are stored in the wallet database. Default indexer URLs:
+`https://ootle-indexer-a.tari.com/` (esmeralda) and `http://localhost:12500` (localnet).
+
+### Settings
+
+```bash
+# Change the indexer API URL (empty value resets to the network default)
+ootle set indexer-url https://my-indexer.example.com/
+ootle set indexer-url ""
+
+# Change the network (account addresses are re-encoded for the new network)
+ootle set network localnet
 ```
 
 ### Accounts and keys
 
 ```bash
+# Create another account (funds it from the faucet on testnets and prints its keys)
+ootle create-account --name alice
+
 # List accounts in the wallet
 ootle list-accounts
 
-# Show the keys of an account (including secret keys)
+# Show the keys of an account, including the secret account and view keys
 ootle show-keys -a alice
+
+# Show the wallet seed words
+ootle show-seed-words
 
 # Change the default account
 ootle set-default-account -n alice

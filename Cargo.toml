@@ -14,6 +14,7 @@ tari_template_lib_types = { git = "https://github.com/tari-project/tari-ootle.gi
 #tari_template_lib_types = { path = "../dan/crates/template_lib_types" }
 
 tari_crypto = { version = "0.23", features = ["std"] }
+tari_common_types = "5.4.0-pre.3"
 
 anyhow = "1.0.100"
 env_logger = "0.11.8"
@@ -21,6 +22,7 @@ log = "0.4.28"
 clap = { version = "4.5.48", features = ["derive", "env"] }
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
 url = "2.5.7"
+rpassword = "7.4"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"

@@ -1,19 +1,23 @@
 // Copyright 2026 The Tari Project
 // SPDX-License-Identifier: BSD-3-Clause
 
-//! Sqlite persistence for accounts and transaction history. ootle-rs is stateless, so the
-//! CLI keeps its own store of account keys and submitted transactions.
+//! Sqlite persistence for wallet settings, accounts and transaction history. ootle-rs is
+//! stateless, so the CLI keeps its own store.
+//!
+//! No secret keys are stored: the wallet keeps a single cipher seed (enciphered, optionally
+//! with a user passphrase) in the settings table, and account keys are derived from it on
+//! demand using the account's derivation index.
 
 use std::path::Path;
 
 use anyhow::{Context, bail};
-use ootle_rs::keys::OotleSecretKey;
-use ootle_rs::{Network, ToAccountAddress};
+use ootle_rs::{Address, Network, ToAccountAddress};
 use rusqlite::{Connection, OptionalExtension, Row, params};
-use tari_crypto::ristretto::RistrettoSecretKey;
-use tari_crypto::tari_utilities::ByteArray;
 use tari_crypto::tari_utilities::hex::{from_hex, to_hex};
-use zeroize::Zeroizing;
+
+const SETTING_NETWORK: &str = "network";
+const SETTING_CIPHER_SEED: &str = "cipher_seed";
+const SETTING_INDEXER_URL: &str = "indexer_url";
 
 pub struct WalletStore {
     conn: Connection,
@@ -22,13 +26,11 @@ pub struct WalletStore {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AccountRecord {
     pub name: String,
-    pub network: String,
+    pub derivation_index: u64,
     pub address: String,
     pub account_component_address: String,
     pub account_public_key: String,
     pub view_public_key: String,
-    pub account_secret_key: String,
-    pub view_secret_key: String,
     pub is_default: bool,
 }
 
@@ -52,16 +54,18 @@ impl WalletStore {
         let conn = Connection::open(path)
             .with_context(|| format!("failed to open database {}", path.display()))?;
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS accounts (
+            "CREATE TABLE IF NOT EXISTS settings (
+                 key TEXT PRIMARY KEY,
+                 value TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS accounts (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  name TEXT NOT NULL UNIQUE,
-                 network TEXT NOT NULL,
+                 derivation_index INTEGER NOT NULL UNIQUE,
                  address TEXT NOT NULL,
                  account_component_address TEXT NOT NULL,
                  account_public_key TEXT NOT NULL,
                  view_public_key TEXT NOT NULL,
-                 account_secret_key TEXT NOT NULL,
-                 view_secret_key TEXT NOT NULL,
                  is_default INTEGER NOT NULL DEFAULT 0,
                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
              );
@@ -79,13 +83,103 @@ impl WalletStore {
         Ok(Self { conn })
     }
 
+    pub fn is_initialized(&self) -> anyhow::Result<bool> {
+        Ok(self.get_setting(SETTING_NETWORK)?.is_some()
+            && self.get_setting(SETTING_CIPHER_SEED)?.is_some())
+    }
+
+    pub fn network(&self) -> anyhow::Result<Option<Network>> {
+        let value = self.get_setting(SETTING_NETWORK)?;
+        value
+            .map(|v| {
+                v.parse::<Network>()
+                    .map_err(|e| anyhow::anyhow!("invalid network in wallet database: {e:?}"))
+            })
+            .transpose()
+    }
+
+    pub fn set_network(&self, network: Network) -> anyhow::Result<()> {
+        self.set_setting(SETTING_NETWORK, &network.to_string())
+    }
+
+    pub fn indexer_url(&self) -> anyhow::Result<Option<String>> {
+        self.get_setting(SETTING_INDEXER_URL)
+    }
+
+    pub fn set_indexer_url(&self, url: &str) -> anyhow::Result<()> {
+        self.set_setting(SETTING_INDEXER_URL, url)
+    }
+
+    pub fn clear_indexer_url(&self) -> anyhow::Result<()> {
+        self.conn.execute(
+            "DELETE FROM settings WHERE key = ?1",
+            params![SETTING_INDEXER_URL],
+        )?;
+        Ok(())
+    }
+
+    /// Rewrites the stored account addresses for a new network. The underlying keys are
+    /// network-independent; only the address encoding (and its network prefix) changes.
+    pub fn update_account_addresses(&self, network: Network) -> anyhow::Result<()> {
+        for account in self.list_accounts()? {
+            let view_key = account.view_public_key.parse().map_err(|e| {
+                anyhow::anyhow!("invalid view public key in account '{}': {e}", account.name)
+            })?;
+            let account_key = account.account_public_key.parse().map_err(|e| {
+                anyhow::anyhow!(
+                    "invalid account public key in account '{}': {e}",
+                    account.name
+                )
+            })?;
+            let address = Address::new(network, view_key, account_key);
+            self.conn.execute(
+                "UPDATE accounts SET address = ?1 WHERE name = ?2",
+                params![address.to_string(), account.name],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Returns the enciphered cipher seed bytes, if the wallet has been set up.
+    pub fn enciphered_cipher_seed(&self) -> anyhow::Result<Option<Vec<u8>>> {
+        let value = self.get_setting(SETTING_CIPHER_SEED)?;
+        value
+            .map(|v| from_hex(&v).context("invalid cipher seed in wallet database"))
+            .transpose()
+    }
+
+    pub fn set_enciphered_cipher_seed(&self, enciphered: &[u8]) -> anyhow::Result<()> {
+        self.set_setting(SETTING_CIPHER_SEED, &to_hex(enciphered))
+    }
+
+    fn get_setting(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let value = self
+            .conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value)
+    }
+
+    fn set_setting(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
     pub fn insert_account(
         &mut self,
         name: &str,
-        secret: &OotleSecretKey,
+        derivation_index: u64,
+        address: &Address,
         set_default: bool,
     ) -> anyhow::Result<AccountRecord> {
-        let address = secret.to_address();
         // The first account is always the default
         let is_default = set_default || self.count_accounts()? == 0;
 
@@ -94,18 +188,16 @@ impl WalletStore {
             tx.execute("UPDATE accounts SET is_default = 0", [])?;
         }
         let res = tx.execute(
-            "INSERT INTO accounts (name, network, address, account_component_address,
-                 account_public_key, view_public_key, account_secret_key, view_secret_key, is_default)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO accounts (name, derivation_index, address, account_component_address,
+                 account_public_key, view_public_key, is_default)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 name,
-                secret.network().to_string(),
+                derivation_index as i64,
                 address.to_string(),
                 address.to_account_address().to_string(),
                 address.account_public_key().to_string(),
                 address.view_only_key().to_string(),
-                to_hex(secret.account_secret().as_bytes()),
-                to_hex(secret.view_only_secret().as_bytes()),
                 is_default,
             ],
         );
@@ -121,6 +213,16 @@ impl WalletStore {
         tx.commit()?;
 
         self.get_account(Some(name))
+    }
+
+    /// Returns the next unused derivation index.
+    pub fn next_derivation_index(&self) -> anyhow::Result<u64> {
+        let max: Option<i64> =
+            self.conn
+                .query_row("SELECT MAX(derivation_index) FROM accounts", [], |row| {
+                    row.get(0)
+                })?;
+        Ok(max.map(|m| m as u64 + 1).unwrap_or(0))
     }
 
     /// Returns the named account, or the default account if no name is given.
@@ -147,7 +249,7 @@ impl WalletStore {
             Some(account) => Ok(account),
             None => match name {
                 Some(name) => bail!("Account '{name}' not found"),
-                None => bail!("No accounts in the wallet. Create one with `create-account`"),
+                None => bail!("No accounts in the wallet. Run `setup` or `create-account` first"),
             },
         }
     }
@@ -219,37 +321,15 @@ impl WalletStore {
     }
 }
 
-impl AccountRecord {
-    pub fn to_secret_key(&self) -> anyhow::Result<OotleSecretKey> {
-        let network = self
-            .network
-            .parse::<Network>()
-            .map_err(|e| anyhow::anyhow!("invalid network in account '{}': {e:?}", self.name))?;
-        let account_secret = parse_secret_key(&self.account_secret_key)
-            .with_context(|| format!("invalid account secret key in account '{}'", self.name))?;
-        let view_secret = parse_secret_key(&self.view_secret_key)
-            .with_context(|| format!("invalid view secret key in account '{}'", self.name))?;
-        Ok(OotleSecretKey::new(network, account_secret, view_secret))
-    }
-}
-
 fn row_to_account(row: &Row<'_>) -> rusqlite::Result<AccountRecord> {
+    let derivation_index: i64 = row.get("derivation_index")?;
     Ok(AccountRecord {
         name: row.get("name")?,
-        network: row.get("network")?,
+        derivation_index: derivation_index as u64,
         address: row.get("address")?,
         account_component_address: row.get("account_component_address")?,
         account_public_key: row.get("account_public_key")?,
         view_public_key: row.get("view_public_key")?,
-        account_secret_key: row.get("account_secret_key")?,
-        view_secret_key: row.get("view_secret_key")?,
         is_default: row.get("is_default")?,
     })
-}
-
-fn parse_secret_key(hex: &str) -> anyhow::Result<RistrettoSecretKey> {
-    let bytes = Zeroizing::new(from_hex(hex).context("not valid hex")?);
-    let key = RistrettoSecretKey::from_canonical_bytes(&bytes)
-        .map_err(|e| anyhow::anyhow!("not a valid Ristretto secret key: {e}"))?;
-    Ok(key)
 }

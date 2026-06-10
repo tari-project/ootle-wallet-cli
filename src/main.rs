@@ -1,11 +1,15 @@
 // Copyright 2025 The Tari Project
 // SPDX-License-Identifier: BSD-3-Clause
 
+#[macro_use]
 mod macros;
+mod keys;
+mod prompt;
 mod spinner;
 mod store;
 mod table;
 
+use crate::prompt::{prompt_line, prompt_new_passphrase, prompt_with_default, prompt_yes_no};
 use crate::spinner::spinner;
 use crate::store::{AccountRecord, WalletStore};
 use crate::table::Table;
@@ -23,10 +27,16 @@ use ootle_rs::wallet::{NoWallet, OotleWallet};
 use ootle_rs::{Address, Network, ToAccountAddress, TransactionOutcome, TransactionRequest};
 use std::path::Path;
 use std::time::Duration;
+use tari_common_types::seeds::cipher_seed::CipherSeed;
+use tari_common_types::seeds::mnemonic::{Mnemonic, MnemonicLanguage};
+use tari_common_types::seeds::seed_words::SeedWords;
+use tari_crypto::tari_utilities::hex::to_hex;
+use tari_crypto::tari_utilities::{ByteArray, Hidden, SafePassword};
 use tari_template_lib_types::Amount;
 use tari_template_lib_types::constants::{TARI_TOKEN, XTR_FAUCET_AMOUNT};
 use termimad::crossterm::style::Color;
 use url::Url;
+use zeroize::Zeroizing;
 
 const ANSI_GREEN: Color = Color::AnsiValue(2);
 const ANSI_YELLOW: Color = Color::AnsiValue(3);
@@ -50,6 +60,7 @@ struct CommonArgs {
     #[arg(
         short = 'd',
         long,
+        global = true,
         help = "Path to the database file",
         env = "OOTLE_DB_PATH",
         default_value = "data/wallet.sqlite"
@@ -58,22 +69,47 @@ struct CommonArgs {
     #[arg(
         short = 'i',
         long,
+        global = true,
         env = "OOTLE_INDEXER_URL",
-        help = "URL of an Ootle indexer API. Defaults to a known indexer for the selected network"
+        help = "URL of an Ootle indexer API. Defaults to a known indexer for the wallet's network"
     )]
     pub indexer_url: Option<Url>,
     #[arg(
         short = 'n',
         long,
-        default_value = "esmeralda",
         env = "OOTLE_NETWORK",
-        help = "Network to use (mainnet, esmeralda, localnet, etc)"
+        help = "Network to use during setup. After setup, the wallet's network is stored in the database"
     )]
-    pub network: Network,
+    pub network: Option<Network>,
+    #[arg(
+        short = 'p',
+        long,
+        global = true,
+        env = "OOTLE_PASSWORD",
+        help = "Wallet passphrase. If not provided, you will be prompted when required"
+    )]
+    pub password: Option<String>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Run the initial wallet setup: choose a network, create (or restore) the wallet seed
+    /// words, create the first account and fund it on testnets
+    Setup {
+        #[arg(short, long, help = "Name of the first account")]
+        account_name: Option<String>,
+        #[arg(long, help = "Restore the wallet from existing seed words")]
+        restore: bool,
+        #[arg(long, help = "Do not request testnet funds for the first account")]
+        no_fund: bool,
+        #[arg(
+            short = 'f',
+            long,
+            default_value_t = DEFAULT_FEE,
+            help = "Max fee to pay for the faucet transaction (in micro XTR)"
+        )]
+        fee_amount: u64,
+    },
     /// Create a new account, fund it with testnet funds (if applicable) and output the
     /// account and view secret keys
     CreateAccount {
@@ -89,7 +125,7 @@ enum Command {
         #[arg(
             short = 'o',
             long,
-            help = "Also write the account details (including secret keys) to this JSON file"
+            help = "Also write the account details (public keys and address) to this JSON file"
         )]
         output_path: Option<Box<Path>>,
         #[arg(long, help = "Do not request testnet funds for the new account")]
@@ -110,10 +146,19 @@ enum Command {
         #[arg(short, long, help = "Account name. Defaults to the default account")]
         account_name: Option<String>,
     },
+    /// Show the wallet seed words
+    ShowSeedWords,
     /// Set the default account
     SetDefaultAccount {
         #[arg(short, long, help = "Name of the account to set as default")]
         name: String,
+    },
+    /// Change a wallet setting stored in the database
+    Set {
+        #[arg(value_enum, help = "The setting to change")]
+        key: SettingKey,
+        #[arg(help = "The new value. An empty value resets the setting to its default")]
+        value: String,
     },
     /// Request testnet funds from the faucet
     #[clap(alias = "get-faucet-coins")]
@@ -168,6 +213,14 @@ enum Command {
     ShowInfo,
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum SettingKey {
+    /// The network this wallet operates on
+    Network,
+    /// The Ootle indexer API URL
+    IndexerUrl,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
@@ -178,13 +231,40 @@ async fn main() -> Result<(), anyhow::Error> {
 
     match cli.command {
         Command::ShowInfo => {
+            let network = store.network()?;
             cli_println!("Ootle Wallet CLI");
             cli_println!("================");
-            cli_println!(White, "Network: {}", cli.common.network);
+            match network {
+                Some(network) => {
+                    cli_println!(White, "Network: {}", network);
+                    match resolve_indexer_url(&cli.common, &store, network) {
+                        Ok(url) => cli_println!(White, "Indexer URL: {}", url),
+                        Err(_) => cli_println!(White, "Indexer URL: not set (use --indexer-url)"),
+                    }
+                }
+                None => {
+                    cli_println!(White, "Network: not set. Run `setup` first");
+                }
+            }
             cli_println!(White, "Database: {}", cli.common.database_file.display());
-            cli_println!(White, "Indexer URL: {}", resolve_indexer_url(&cli.common)?);
             cli_println!(White, "Accounts: {}", store.count_accounts()?);
             cli_println!("================");
+        }
+        Command::Setup {
+            account_name,
+            restore,
+            no_fund,
+            fee_amount,
+        } => {
+            setup(
+                &cli.common,
+                &mut store,
+                account_name,
+                restore,
+                no_fund,
+                fee_amount,
+            )
+            .await?;
         }
         Command::CreateAccount {
             name,
@@ -193,11 +273,14 @@ async fn main() -> Result<(), anyhow::Error> {
             no_fund,
             fee_amount,
         } => {
-            let secret = OotleSecretKey::random(cli.common.network);
-            let account = store.insert_account(&name, &secret, set_default)?;
+            let network = resolve_network(&cli.common, &store)?;
+            let (seed, _) = load_cipher_seed(&cli.common, &store)?;
+            let index = store.next_derivation_index()?;
+            let secret = keys::derive_account_secret_key(&seed, network, index);
+            let account = store.insert_account(&name, index, &secret.to_address(), set_default)?;
 
             cli_println!(ANSI_GREEN, "✔️ Account '{}' created successfully", name);
-            print_account_keys(&account);
+            print_account_keys(&account, &secret);
             cli_println!(
                 ANSI_YELLOW,
                 "⚠️ Keep the secret keys safe. Anyone with the secret account key can spend your funds."
@@ -212,33 +295,29 @@ async fn main() -> Result<(), anyhow::Error> {
             if no_fund {
                 return Ok(());
             }
-            if !cli.common.network.is_testnet() {
+            if !network.is_testnet() {
                 cli_println!(
                     ANSI_WHITE,
                     "ℹ️ There is no faucet on {}. Skipping funding.",
-                    cli.common.network
+                    network
                 );
                 return Ok(());
             }
 
-            let mut provider = connect_with_wallet(&cli.common, secret).await?;
+            let mut provider = connect_with_wallet(&cli.common, &store, network, secret).await?;
             request_faucet_funds(&mut provider, &store, &account, fee_amount).await?;
         }
         Command::ListAccounts => {
             let accounts = store.list_accounts()?;
             if accounts.is_empty() {
-                cli_println!(
-                    ANSI_WHITE,
-                    "No accounts in the wallet. Create one with `create-account`"
-                );
+                cli_println!(ANSI_WHITE, "No accounts in the wallet. Run `setup` first");
                 return Ok(());
             }
             let mut table = Table::new();
-            table.set_titles(vec!["Name", "Network", "Address", "Default"]);
+            table.set_titles(vec!["Name", "Address", "Default"]);
             for account in accounts {
                 table.add_row(table_row![
                     account.name,
-                    account.network,
                     account.address,
                     if account.is_default { "✔" } else { "" }
                 ]);
@@ -246,11 +325,25 @@ async fn main() -> Result<(), anyhow::Error> {
             table.print_stdout();
         }
         Command::ShowKeys { account_name } => {
+            let network = resolve_network(&cli.common, &store)?;
             let account = store.get_account(account_name.as_deref())?;
-            print_account_keys(&account);
+            let (seed, _) = load_cipher_seed(&cli.common, &store)?;
+            let secret = keys::derive_account_secret_key(&seed, network, account.derivation_index);
+            print_account_keys(&account, &secret);
             cli_println!(
                 ANSI_YELLOW,
                 "⚠️ Keep the secret keys safe. Anyone with the secret account key can spend your funds."
+            );
+        }
+        Command::ShowSeedWords => {
+            let (seed, passphrase) = load_cipher_seed(&cli.common, &store)?;
+            let words = seed
+                .to_mnemonic(MnemonicLanguage::English, passphrase)
+                .map_err(|e| anyhow::anyhow!("failed to encode seed words: {e}"))?;
+            cli_println!(ANSI_WHITE, "{}", words.join(" ").reveal());
+            cli_println!(
+                ANSI_YELLOW,
+                "⚠️ Anyone with these seed words (and your passphrase, if set) can spend your funds."
             );
         }
         Command::SetDefaultAccount { name } => {
@@ -261,32 +354,64 @@ async fn main() -> Result<(), anyhow::Error> {
                 name
             );
         }
+        Command::Set { key, value } => match key {
+            SettingKey::Network => {
+                let network: Network = value
+                    .parse()
+                    .map_err(|e| anyhow::anyhow!("invalid network '{value}': {e:?}"))?;
+                store.set_network(network)?;
+                // The account keys are network-independent, but the stored address
+                // encodings include the network and must be rewritten
+                store.update_account_addresses(network)?;
+                cli_println!(ANSI_GREEN, "✔️ Network set to {}", network);
+            }
+            SettingKey::IndexerUrl => {
+                if value.is_empty() {
+                    store.clear_indexer_url()?;
+                    cli_println!(ANSI_GREEN, "✔️ Indexer URL reset to the network default");
+                } else {
+                    let url: Url = value
+                        .parse()
+                        .with_context(|| format!("invalid indexer URL '{value}'"))?;
+                    store.set_indexer_url(url.as_str())?;
+                    cli_println!(ANSI_GREEN, "✔️ Indexer URL set to {}", url);
+                }
+            }
+        },
         Command::Faucet {
             account_name,
             fee_amount,
         } => {
-            if !cli.common.network.is_testnet() {
-                bail!("There is no faucet on {}", cli.common.network);
+            let network = resolve_network(&cli.common, &store)?;
+            if !network.is_testnet() {
+                bail!("There is no faucet on {}", network);
             }
             let account = store.get_account(account_name.as_deref())?;
-            let secret = load_secret(&cli.common, &account)?;
-            let mut provider = connect_with_wallet(&cli.common, secret).await?;
+            let (seed, _) = load_cipher_seed(&cli.common, &store)?;
+            let secret = keys::derive_account_secret_key(&seed, network, account.derivation_index);
+            let mut provider = connect_with_wallet(&cli.common, &store, network, secret).await?;
             request_faucet_funds(&mut provider, &store, &account, fee_amount).await?;
         }
         Command::Balance {
             account_name,
             address,
         } => {
-            let address = match address {
-                Some(address) => address,
+            // An address carries its own network, so it can be queried without a wallet
+            let (address, network) = match address {
+                Some(address) => {
+                    let network = address.network();
+                    (address, network)
+                }
                 None => {
+                    let network = resolve_network(&cli.common, &store)?;
                     let account = store.get_account(account_name.as_deref())?;
-                    account.address.parse().map_err(|e| {
+                    let address = account.address.parse().map_err(|e| {
                         anyhow::anyhow!("invalid address in account '{}': {e}", account.name)
-                    })?
+                    })?;
+                    (address, network)
                 }
             };
-            show_balances(&cli.common, &address).await?;
+            show_balances(&cli.common, &store, network, &address).await?;
         }
         Command::Transfer {
             from_account,
@@ -294,19 +419,21 @@ async fn main() -> Result<(), anyhow::Error> {
             amount,
             fee_amount,
         } => {
+            let network = resolve_network(&cli.common, &store)?;
             if amount == 0 {
                 bail!("Transfer amount must be greater than zero");
             }
-            if to_address.network() != cli.common.network {
+            if to_address.network() != network {
                 bail!(
-                    "Destination address is for network {}, but {} was selected",
+                    "Destination address is for network {}, but this wallet is on {}",
                     to_address.network(),
-                    cli.common.network
+                    network
                 );
             }
             let account = store.get_account(from_account.as_deref())?;
-            let secret = load_secret(&cli.common, &account)?;
-            let mut provider = connect_with_wallet(&cli.common, secret).await?;
+            let (seed, _) = load_cipher_seed(&cli.common, &store)?;
+            let secret = keys::derive_account_secret_key(&seed, network, account.derivation_index);
+            let mut provider = connect_with_wallet(&cli.common, &store, network, secret).await?;
             transfer(
                 &mut provider,
                 &store,
@@ -349,10 +476,163 @@ async fn main() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-fn print_account_keys(account: &AccountRecord) {
+async fn setup(
+    common: &CommonArgs,
+    store: &mut WalletStore,
+    account_name: Option<String>,
+    restore: bool,
+    no_fund: bool,
+    fee_amount: u64,
+) -> anyhow::Result<()> {
+    if store.is_initialized()? {
+        bail!(
+            "Wallet at {} is already set up. Use a different --database-file to create a new wallet",
+            common.database_file.display()
+        );
+    }
+
+    cli_println!(ANSI_BLUE, "Ootle wallet setup");
+    cli_println!(ANSI_BLUE, "==================");
+
+    let interactive = account_name.is_none();
+
+    // 1. Network
+    let network = match common.network {
+        Some(network) => network,
+        None => loop {
+            let input = prompt_with_default(
+                "Network (esmeralda, localnet, igor, nextnet, stagenet, mainnet)",
+                "esmeralda",
+            )?;
+            match input.parse::<Network>() {
+                Ok(network) => break network,
+                Err(e) => cli_println!(ANSI_YELLOW, "{:?}", e),
+            }
+        },
+    };
+
+    // 2. Indexer API URL
+    let indexer_url = match (
+        common.indexer_url.as_ref(),
+        known_default_indexer_url(network),
+    ) {
+        (Some(url), _) => url.to_string(),
+        (None, default) if interactive => loop {
+            let input = match default {
+                Some(default) => prompt_with_default("Indexer API URL", default)?,
+                None => prompt_line("Indexer API URL: ")?,
+            };
+            if input.is_empty() {
+                cli_println!(ANSI_YELLOW, "An indexer URL is required for {}", network);
+                continue;
+            }
+            match input.parse::<Url>() {
+                Ok(url) => break url.to_string(),
+                Err(e) => cli_println!(ANSI_YELLOW, "Invalid URL: {}", e),
+            }
+        },
+        (None, Some(default)) => default.to_string(),
+        (None, None) => {
+            bail!("There is no default indexer URL for {network}. Provide one with --indexer-url")
+        }
+    };
+
+    // 3. Optional passphrase protecting the seed
+    let passphrase = match common.password.as_ref() {
+        Some(p) => Some(SafePassword::from(p.clone())),
+        None => prompt_new_passphrase()?.map(|p| SafePassword::from(p.to_string())),
+    };
+
+    // 4. Create or restore the seed
+    let seed = if restore {
+        let words_line =
+            Zeroizing::new(prompt_line("Enter your seed words separated by spaces: ")?);
+        let words = SeedWords::new(
+            words_line
+                .split_whitespace()
+                .map(|w| Hidden::hide(w.to_string()))
+                .collect(),
+        );
+        CipherSeed::from_mnemonic(&words, passphrase.clone()).map_err(|e| {
+            anyhow::anyhow!("Failed to restore from seed words (wrong passphrase?): {e}")
+        })?
+    } else {
+        CipherSeed::random()
+    };
+
+    // 5. Persist
+    store.set_network(network)?;
+    store.set_indexer_url(&indexer_url)?;
+    let enciphered = seed
+        .encipher(passphrase.clone())
+        .map_err(|e| anyhow::anyhow!("failed to encipher seed: {e}"))?;
+    store.set_enciphered_cipher_seed(&enciphered)?;
+    cli_println!(
+        ANSI_GREEN,
+        "✔️ Wallet initialized on {} (indexer: {})",
+        network,
+        indexer_url
+    );
+
+    // 6. Show the seed words for a newly created seed
+    if !restore {
+        let words = seed
+            .to_mnemonic(MnemonicLanguage::English, passphrase.clone())
+            .map_err(|e| anyhow::anyhow!("failed to encode seed words: {e}"))?;
+        cli_println!();
+        cli_println!(ANSI_BLUE, "Your seed words:");
+        cli_println!(ANSI_WHITE, "{}", words.join(" ").reveal());
+        cli_println!(
+            ANSI_YELLOW,
+            "⚠️ Write these down and keep them safe. They are the only way to recover your wallet."
+        );
+        cli_println!();
+    }
+
+    // 7. First account
+    let name = match account_name {
+        Some(name) => name,
+        None => prompt_with_default("Name your first account", "default")?,
+    };
+    let index = store.next_derivation_index()?;
+    let secret = keys::derive_account_secret_key(&seed, network, index);
+    let account = store.insert_account(&name, index, &secret.to_address(), true)?;
+    cli_println!(ANSI_GREEN, "✔️ Account '{}' created", name);
+    cli_println!(ANSI_WHITE, "Address: {}", account.address);
+    cli_println!(
+        ANSI_WHITE,
+        "Component: {}",
+        account.account_component_address
+    );
+    cli_println!(
+        ANSI_WHITE,
+        "Use `show-keys` to view the account's secret keys."
+    );
+
+    // 8. Fund on testnets
+    if no_fund || !network.is_testnet() {
+        if !network.is_testnet() {
+            cli_println!(ANSI_WHITE, "ℹ️ There is no faucet on {}.", network);
+        }
+        return Ok(());
+    }
+    let fund = if interactive {
+        prompt_yes_no("Fund the account from the testnet faucet?", true)?
+    } else {
+        true
+    };
+    if fund {
+        let mut provider = connect_with_wallet(common, store, network, secret).await?;
+        request_faucet_funds(&mut provider, store, &account, fee_amount).await?;
+    }
+    Ok(())
+}
+
+fn print_account_keys(account: &AccountRecord, secret: &OotleSecretKey) {
+    let account_secret_hex = Zeroizing::new(to_hex(secret.account_secret().as_bytes()));
+    let view_secret_hex = Zeroizing::new(to_hex(secret.view_only_secret().as_bytes()));
     cli_println!(ANSI_BLUE, "-----------------------------------");
     cli_println!(ANSI_WHITE, "Name: {}", account.name);
-    cli_println!(ANSI_WHITE, "Network: {}", account.network);
     cli_println!(ANSI_WHITE, "Address: {}", account.address);
     cli_println!(
         ANSI_WHITE,
@@ -365,12 +645,8 @@ fn print_account_keys(account: &AccountRecord) {
         account.account_public_key
     );
     cli_println!(ANSI_WHITE, "View public key: {}", account.view_public_key);
-    cli_println!(
-        ANSI_WHITE,
-        "Secret account key: {}",
-        account.account_secret_key
-    );
-    cli_println!(ANSI_WHITE, "Secret view key: {}", account.view_secret_key);
+    cli_println!(ANSI_WHITE, "Secret account key: {}", *account_secret_hex);
+    cli_println!(ANSI_WHITE, "Secret view key: {}", *view_secret_hex);
     cli_println!(ANSI_BLUE, "-----------------------------------");
 }
 
@@ -506,9 +782,14 @@ async fn transfer(
     Ok(())
 }
 
-async fn show_balances(common: &CommonArgs, address: &Address) -> anyhow::Result<()> {
+async fn show_balances(
+    common: &CommonArgs,
+    store: &WalletStore,
+    network: Network,
+    address: &Address,
+) -> anyhow::Result<()> {
     let component_address = address.to_account_address();
-    let provider = connect_readonly(common).await?;
+    let provider = connect_readonly(common, store, network).await?;
 
     if provider.get_substate(component_address).await?.is_none() {
         cli_println!(
@@ -562,17 +843,43 @@ async fn show_balances(common: &CommonArgs, address: &Address) -> anyhow::Result
     Ok(())
 }
 
-fn load_secret(common: &CommonArgs, account: &AccountRecord) -> anyhow::Result<OotleSecretKey> {
-    let secret = account.to_secret_key()?;
-    if secret.network() != common.network {
-        bail!(
-            "Account '{}' is for network {}, but {} was selected",
-            account.name,
-            secret.network(),
-            common.network
-        );
+/// Returns the wallet's network from the database, validating any explicitly provided
+/// `--network` flag against it.
+fn resolve_network(common: &CommonArgs, store: &WalletStore) -> anyhow::Result<Network> {
+    match (common.network, store.network()?) {
+        (Some(flag), Some(db)) if flag != db => bail!(
+            "--network {flag} conflicts with this wallet's network ({db}). The network is set during `setup`"
+        ),
+        (_, Some(db)) => Ok(db),
+        (Some(flag), None) => Ok(flag),
+        (None, None) => bail!("Wallet is not set up. Run `ootle setup` first"),
     }
-    Ok(secret)
+}
+
+/// Loads and deciphers the wallet cipher seed, prompting for the passphrase if one is
+/// required and was not provided.
+fn load_cipher_seed(
+    common: &CommonArgs,
+    store: &WalletStore,
+) -> anyhow::Result<(CipherSeed, Option<SafePassword>)> {
+    let enciphered = store
+        .enciphered_cipher_seed()?
+        .ok_or_else(|| anyhow::anyhow!("Wallet is not set up. Run `ootle setup` first"))?;
+    let passphrase = common.password.clone().map(SafePassword::from);
+    match CipherSeed::from_enciphered_bytes(&enciphered, passphrase.clone()) {
+        Ok(seed) => Ok((seed, passphrase)),
+        Err(_) if passphrase.is_none() => {
+            let entered = SafePassword::from(
+                prompt::prompt_password_hidden("Wallet passphrase: ")?.to_string(),
+            );
+            let seed = CipherSeed::from_enciphered_bytes(&enciphered, Some(entered.clone()))
+                .map_err(|_| {
+                    anyhow::anyhow!("Failed to decrypt the wallet seed: wrong passphrase?")
+                })?;
+            Ok((seed, Some(entered)))
+        }
+        Err(_) => bail!("Failed to decrypt the wallet seed: wrong passphrase?"),
+    }
 }
 
 fn record_outcome(
@@ -616,27 +923,33 @@ fn check_watch_result(
 
 async fn connect_with_wallet(
     common: &CommonArgs,
+    store: &WalletStore,
+    network: Network,
     secret: OotleSecretKey,
 ) -> anyhow::Result<IndexerProvider<OotleWallet>> {
-    let url = resolve_indexer_url(common)?;
+    let url = resolve_indexer_url(common, store, network)?;
     let wallet = OotleWallet::new(PrivateKeyProvider::new(secret));
     let provider = ProviderBuilder::new()
         .wallet(wallet)
         .connect_with_transaction_timeout(&url, TRANSACTION_TIMEOUT)
         .await
         .with_context(|| format!("failed to connect to indexer at {url}"))?;
-    check_indexer_network(&provider, common.network, &url).await?;
+    check_indexer_network(&provider, network, &url).await?;
     Ok(provider)
 }
 
-async fn connect_readonly(common: &CommonArgs) -> anyhow::Result<IndexerProvider<NoWallet>> {
-    let url = resolve_indexer_url(common)?;
+async fn connect_readonly(
+    common: &CommonArgs,
+    store: &WalletStore,
+    network: Network,
+) -> anyhow::Result<IndexerProvider<NoWallet>> {
+    let url = resolve_indexer_url(common, store, network)?;
     let provider = ProviderBuilder::new()
-        .with_network(common.network)
+        .with_network(network)
         .connect(&url)
         .await
         .with_context(|| format!("failed to connect to indexer at {url}"))?;
-    check_indexer_network(&provider, common.network, &url).await?;
+    check_indexer_network(&provider, network, &url).await?;
     Ok(provider)
 }
 
@@ -650,22 +963,36 @@ async fn check_indexer_network<W>(
         .await
         .with_context(|| format!("failed to connect to indexer at {url}"))?;
     if actual != expected {
-        bail!("Indexer at {url} is on network {actual}, but {expected} was selected");
+        bail!("Indexer at {url} is on network {actual}, but this wallet is on {expected}");
     }
     Ok(())
 }
 
-fn resolve_indexer_url(common: &CommonArgs) -> anyhow::Result<String> {
+fn known_default_indexer_url(network: Network) -> Option<&'static str> {
+    match network {
+        Network::LocalNet | Network::Esmeralda => Some(ootle_rs::default_indexer_url(network)),
+        _ => None,
+    }
+}
+
+/// Resolution order: `--indexer-url` flag, then the wallet database setting, then the
+/// known default for the network.
+fn resolve_indexer_url(
+    common: &CommonArgs,
+    store: &WalletStore,
+    network: Network,
+) -> anyhow::Result<String> {
     if let Some(url) = &common.indexer_url {
         return Ok(url.to_string());
     }
-    match common.network {
-        Network::LocalNet | Network::Esmeralda => {
-            Ok(ootle_rs::default_indexer_url(common.network).to_string())
-        }
-        network => {
-            bail!("There is no default indexer URL for {network}. Specify one with --indexer-url")
-        }
+    if let Some(url) = store.indexer_url()? {
+        return Ok(url);
+    }
+    match known_default_indexer_url(network) {
+        Some(url) => Ok(url.to_string()),
+        None => bail!(
+            "There is no default indexer URL for {network}. Set one with `set indexer-url <url>` or --indexer-url"
+        ),
     }
 }
 
