@@ -1,6 +1,11 @@
 # ootle-wallet-cli
 
-A command-line interface for Ootle wallet operations built with Rust and Clap.
+A command-line wallet for the [Tari Ootle](https://www.tari.com/) network, built on
+[ootle-rs](https://github.com/tari-project/tari-ootle/tree/development/crates/wallet/ootle-rs).
+
+Account keys and transaction history are persisted in a local sqlite database
+(`data/wallet.sqlite` by default). Secret keys are stored unencrypted - protect the
+database file accordingly.
 
 ## Installation
 
@@ -12,77 +17,90 @@ cargo build --release
 
 ## Usage
 
-The CLI provides several commands for wallet management:
-
-### Basic Usage
-
 ```bash
 # Show help
-ootle-wallet-cli --help
-
-# Show version
-ootle-wallet-cli --version
+ootle --help
 ```
 
-### Commands
+Common options (apply to all commands):
 
-#### Create a new wallet
+| Option | Env | Default | Description |
+| --- | --- | --- | --- |
+| `-d, --database-file` | `OOTLE_DB_PATH` | `data/wallet.sqlite` | Path to the wallet database |
+| `-n, --network` | `OOTLE_NETWORK` | `esmeralda` | Network (mainnet, esmeralda, localnet, ...) |
+| `-i, --indexer-url` | `OOTLE_INDEXER_URL` | per-network default | URL of an Ootle indexer API |
+
+### Create an account
+
+Creates a new account, funds it from the testnet faucet (skipped on mainnet or with
+`--no-fund`) and outputs the account keys, including the secret account and view keys:
+
 ```bash
-# Create a wallet without password
-ootle-wallet-cli create --name my-wallet
+ootle create-account --name alice
 
-# Create a wallet with password protection
-ootle-wallet-cli create --name secure-wallet --password mypassword
+# Also export the keys to a JSON file
+ootle create-account --name alice -o alice.json
 ```
 
-#### List all wallets
+### Accounts and keys
+
 ```bash
-ootle-wallet-cli list
+# List accounts in the wallet
+ootle list-accounts
+
+# Show the keys of an account (including secret keys)
+ootle show-keys -a alice
+
+# Change the default account
+ootle set-default-account -n alice
 ```
 
-#### Check wallet balance
+### Get testnet funds
+
 ```bash
-ootle-wallet-cli balance --name my-wallet
+# Fund the default account from the testnet faucet
+ootle faucet
+
+# Fund a specific account
+ootle faucet -a alice
 ```
 
-#### Send funds
+### Check balances
+
 ```bash
-ootle-wallet-cli send --from my-wallet --to recipient-address --amount 100.0
+# Default account
+ootle balance
+
+# A specific account, or any address
+ootle balance -a alice
+ootle balance --address otl_esm_1...
 ```
 
-### Command Help
+### Transfer
 
-You can get help for any specific command:
+Public transfer of XTR to another address (amounts are in micro XTR):
 
 ```bash
-ootle-wallet-cli create --help
-ootle-wallet-cli send --help
+ootle transfer -t otl_esm_1... -a 1000000
+
+# From a specific account with a custom max fee
+ootle transfer -s alice -t otl_esm_1... -a 1000000 -f 2000
+```
+
+### Transaction history
+
+```bash
+ootle history
+ootle history -a alice
 ```
 
 ## Development
 
-### Build
 ```bash
 cargo build
-```
-
-### Run
-```bash
 cargo run -- --help
-# or
-./target/debug/ootle-wallet-cli --help
 ```
 
-### Test
-```bash
-cargo test
-```
-
-## Features
-
-- Create wallets with optional password protection
-- List available wallets
-- Check wallet balances
-- Send transactions between wallets
-- Comprehensive help system
-- Built with modern Rust and Clap CLI framework
+The Ootle crates are pinned to a `tari-ootle` release tag in `Cargo.toml`. To develop
+against a local checkout, comment out the `git` dependencies and uncomment the `path`
+dependencies pointing at `../dan`.

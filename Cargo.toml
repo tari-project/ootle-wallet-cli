@@ -7,36 +7,25 @@ description = "Ootle Wallet Command Line Interface"
 license = "BSD-3-Clause"
 
 [dependencies]
-tari_ootle_wallet_sdk = { git = "https://github.com/tari-project/tari-ootle.git", tag = "v0.19.1" }
-tari_ootle_wallet_sdk_services = { git = "https://github.com/tari-project/tari-ootle.git", tag = "v0.19.1", features = ["indexer_client"] }
-tari_ootle_wallet_storage_sqlite = { git = "https://github.com/tari-project/tari-ootle.git", tag = "v0.19.1" }
-tari_template_lib_types = { git = "https://github.com/tari-project/tari-ootle.git", tag = "v0.19.1" }
-tari_ootle_common_types = { git = "https://github.com/tari-project/tari-ootle.git", tag = "v0.19.1" }
-tari_ootle_transaction = { git = "https://github.com/tari-project/tari-ootle.git", tag = "v0.19.1" }
-ootle_byte_type = { git = "https://github.com/tari-project/tari-ootle.git", tag = "v0.19.1" }
+ootle-rs = { git = "https://github.com/tari-project/tari-ootle.git", tag = "v0.33.4" }
+tari_template_lib_types = { git = "https://github.com/tari-project/tari-ootle.git", tag = "v0.33.4" }
 
-#tari_ootle_wallet_sdk = { path = "../dan/crates/wallet/sdk" }
-#tari_ootle_wallet_sdk_services = { path = "../dan/crates/wallet/sdk_services", features = ["indexer_client"] }
-#tari_ootle_wallet_storage_sqlite = { path = "../dan/crates/wallet/storage_sqlite" }
+#ootle-rs = { path = "../dan/crates/wallet/ootle-rs" }
 #tari_template_lib_types = { path = "../dan/crates/template_lib_types" }
-#tari_ootle_common_types = { path = "../dan/crates/common_types" }
-#tari_ootle_transaction = { path = "../dan/crates/transaction" }
-#ootle_byte_type = { path = "../dan/crates/ootle_byte_type" }
 
-tari_crypto = { version = "0.22.1", features = ["std"] }
+tari_crypto = { version = "0.23", features = ["std"] }
 
 anyhow = "1.0.100"
 env_logger = "0.11.8"
-futures = "0.3.31"
 log = "0.4.28"
 clap = { version = "4.5.48", features = ["derive", "env"] }
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
 url = "2.5.7"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 spinners = "4.1.1"
 termimad = "0.34.0"
-rand = "0.8"
 zeroize = "1.8.2"
 
 [[bin]]

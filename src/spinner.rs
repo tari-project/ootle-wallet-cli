@@ -1,5 +1,5 @@
 use spinners::Spinner;
-use termimad::{crossterm, MadSkin};
+use termimad::{MadSkin, crossterm};
 
 pub async fn spinner<'a, T, R, TFut, FAfter, TAfter>(text: T, fut: TFut, after: FAfter) -> TAfter
 where
