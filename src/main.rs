@@ -1,38 +1,52 @@
 // Copyright 2025 The Tari Project
 // SPDX-License-Identifier: BSD-3-Clause
 
+#[macro_use]
 mod macros;
-mod models;
+mod keys;
+mod prompt;
 mod spinner;
+mod store;
 mod table;
-mod transfer;
-mod wallet;
 
+use crate::prompt::{prompt_line, prompt_new_passphrase, prompt_with_default, prompt_yes_no};
 use crate::spinner::spinner;
+use crate::store::{AccountRecord, WalletStore};
 use crate::table::Table;
-use crate::transfer::{handle_transfer_command, TransferCommand};
-use crate::wallet::{BalanceStuff, Sdk, TransferOutput, Wallet};
-use anyhow::Context;
+use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use std::path::{Path, PathBuf};
-use tari_crypto::ristretto::RistrettoSecretKey;
-use tari_crypto::tari_utilities::hex::from_hex;
-use tari_crypto::tari_utilities::{ByteArray, SafePassword};
-use tari_ootle_common_types::displayable::Displayable;
-use tari_ootle_common_types::Network;
-use tari_ootle_wallet_sdk::constants::XTR;
-use tari_ootle_wallet_sdk::models::{AccountWithAddress, EpochBirthday, WalletLockId};
-use tari_ootle_wallet_sdk_services::indexer_rest_api::IndexerRestApiNetworkInterface;
-use tari_ootle_wallet_storage_sqlite::SqliteWalletStore;
-use tari_template_lib_types::crypto::RistrettoPublicKeyBytes;
-use tari_template_lib_types::{Amount, ResourceAddress};
+use ootle_rs::builtin_templates::UnsignedTransactionBuilder;
+use ootle_rs::builtin_templates::account::IAccount;
+use ootle_rs::builtin_templates::faucet::IFaucet;
+use ootle_rs::key_provider::PrivateKeyProvider;
+use ootle_rs::keys::OotleSecretKey;
+use ootle_rs::provider::{
+    IndexerProvider, PendingTransactionError, ProviderBuilder, WalletProvider,
+};
+use ootle_rs::wallet::{NoWallet, OotleWallet};
+use ootle_rs::{Address, Network, ToAccountAddress, TransactionOutcome, TransactionRequest};
+use std::path::Path;
+use std::time::Duration;
+use tari_common_types::seeds::cipher_seed::CipherSeed;
+use tari_common_types::seeds::mnemonic::{Mnemonic, MnemonicLanguage};
+use tari_common_types::seeds::seed_words::SeedWords;
+use tari_crypto::tari_utilities::hex::to_hex;
+use tari_crypto::tari_utilities::{ByteArray, Hidden, SafePassword};
+use tari_ootle_common_types::engine_types::indexed_value::IndexedWellKnownTypes;
+use tari_ootle_common_types::engine_types::substate::SubstateId;
+use tari_template_lib_types::constants::{TARI_TOKEN, XTR_FAUCET_AMOUNT};
+use tari_template_lib_types::{Amount, ComponentAddress, ResourceAddress, ResourceType, VaultId};
 use termimad::crossterm::style::Color;
 use url::Url;
 use zeroize::Zeroizing;
 
 const ANSI_GREEN: Color = Color::AnsiValue(2);
+const ANSI_YELLOW: Color = Color::AnsiValue(3);
 const ANSI_BLUE: Color = Color::AnsiValue(4);
 const ANSI_WHITE: Color = Color::AnsiValue(15);
+
+const DEFAULT_FEE: u64 = 1_000;
+const TRANSACTION_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Parser)]
 #[command(name = "ootle", about = "Ootle wallet CLI")]
@@ -45,11 +59,10 @@ struct Cli {
 
 #[derive(Parser)]
 struct CommonArgs {
-    #[arg(short = 'p', long, help = "Password to decrypt the wallet file")]
-    pub password: SafePassword,
     #[arg(
         short = 'd',
         long,
+        global = true,
         help = "Path to the database file",
         env = "OOTLE_DB_PATH",
         default_value = "data/wallet.sqlite"
@@ -58,68 +71,49 @@ struct CommonArgs {
     #[arg(
         short = 'i',
         long,
-        default_value = "http://217.182.93.147:50124/",
+        global = true,
         env = "OOTLE_INDEXER_URL",
-        help = "URL of an Ootle indexer API"
+        help = "URL of an Ootle indexer API. Defaults to a known indexer for the wallet's network"
     )]
-    pub indexer_url: Url,
+    pub indexer_url: Option<Url>,
     #[arg(
         short = 'n',
         long,
-        default_value = "MainNet",
         env = "OOTLE_NETWORK",
-        help = "Network to use (mainnet, igor, localnet, etc)"
+        help = "Network to use during setup. After setup, the wallet's network is stored in the database"
     )]
-    pub network: Network,
+    pub network: Option<Network>,
+    #[arg(
+        short = 'p',
+        long,
+        global = true,
+        env = "OOTLE_PASSWORD",
+        help = "Wallet passphrase. If not provided, you will be prompted when required"
+    )]
+    pub password: Option<String>,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Scan the blockchain for transactions
-    Scan {
-        #[arg(
-            short,
-            long,
-            help = "Optional account name to scan. If not provided, all accounts will be used"
-        )]
-        account_name: Option<Box<str>>,
-    },
-    AddResource {
-        #[arg(
-            short,
-            long,
-            alias = "address",
-            help = "The resource address in hex format"
-        )]
-        resource_address: ResourceAddress,
-        #[arg(
-            short = 'a',
-            long,
-            help = "Optional account name to add the resource to. If not provided, the default account will be used"
-        )]
-        account_name: Option<Box<str>>,
-    },
-    /// Show wallet balance
-    Balance {
-        #[arg(
-            short,
-            long,
-            help = "Optional account name to show balance for. If not provided, all accounts will be used"
-        )]
+    /// Run the initial wallet setup: choose a network, create (or restore) the wallet seed
+    /// words, create the first account and fund it on testnets
+    Setup {
+        #[arg(short, long, help = "Name of the first account")]
         account_name: Option<String>,
-    },
-    /// Import a wallet from a view key
-    ImportViewKey {
-        #[arg(short, long, alias = "view_key", help = "The view key in hex format")]
-        view_private_key: Zeroizing<String>,
+        #[arg(long, help = "Restore the wallet from existing seed words")]
+        restore: bool,
+        #[arg(long, help = "Do not request testnet funds for the first account")]
+        no_fund: bool,
         #[arg(
-            short,
+            short = 'f',
             long,
-            alias = "spend_key",
-            help = "The spend public key in hex format"
+            default_value_t = DEFAULT_FEE,
+            help = "Max fee to pay for the faucet transaction (in micro XTR)"
         )]
-        spend_public_key: RistrettoPublicKeyBytes,
+        fee_amount: u64,
     },
+    /// Create a new account, fund it with testnet funds (if applicable) and output the
+    /// account and view secret keys
     CreateAccount {
         #[arg(short, long, help = "Name of the new account")]
         name: String,
@@ -127,45 +121,130 @@ enum Command {
             short = 's',
             long,
             default_value_t = true,
-            help = "Set the new account as active"
+            help = "Set the new account as the default account"
         )]
-        set_active: bool,
+        set_default: bool,
         #[arg(
             short = 'o',
             long,
-            help = "Output file to save the account details as JSON"
+            help = "Also write the account details (public keys and address) to this JSON file"
         )]
         output_path: Option<Box<Path>>,
-    },
-    #[clap(alias = "faucet")]
-    GetFaucetCoins {
-        #[arg(short, long, help = "Optional account name to get testnet coins for")]
-        account_name: Option<Box<str>>,
+        #[arg(long, help = "Do not request testnet funds for the new account")]
+        no_fund: bool,
         #[arg(
-            short,
+            short = 'f',
             long,
-            default_value_t = 1_000_000_000,
-            help = "Amount of testnet coins to request (in micro XTR)"
+            default_value_t = DEFAULT_FEE,
+            help = "Max fee to pay for the faucet transaction (in micro XTR)"
         )]
+        fee_amount: u64,
+    },
+    /// List the accounts in the wallet
+    #[clap(alias = "accounts")]
+    ListAccounts,
+    /// Show the keys of an account, including the secret account and view keys
+    ShowKeys {
+        #[arg(short, long, help = "Account name. Defaults to the default account")]
+        account_name: Option<String>,
+    },
+    /// Show the wallet seed words
+    ShowSeedWords,
+    /// Set the default account
+    SetDefaultAccount {
+        #[arg(short, long, help = "Name of the account to set as default")]
+        name: String,
+    },
+    /// Change a wallet setting stored in the database
+    Set {
+        #[arg(value_enum, help = "The setting to change")]
+        key: SettingKey,
+        #[arg(help = "The new value. An empty value resets the setting to its default")]
+        value: String,
+    },
+    /// Request testnet funds from the faucet
+    #[clap(alias = "get-faucet-coins")]
+    Faucet {
+        #[arg(short, long, help = "Account name. Defaults to the default account")]
+        account_name: Option<String>,
+        #[arg(
+            short = 'f',
+            long,
+            default_value_t = DEFAULT_FEE,
+            help = "Max fee to pay for the faucet transaction (in micro XTR)"
+        )]
+        fee_amount: u64,
+    },
+    /// Show account balances
+    Balance {
+        #[arg(short, long, help = "Account name. Defaults to the default account")]
+        account_name: Option<String>,
+        #[arg(
+            long,
+            help = "Address to show balances for, instead of a wallet account",
+            conflicts_with = "account_name"
+        )]
+        address: Option<Address>,
+    },
+    /// List the on-chain vaults of an account
+    #[clap(alias = "vaults")]
+    ListVaults {
+        #[arg(short, long, help = "Account name. Defaults to the default account")]
+        account_name: Option<String>,
+        #[arg(
+            long,
+            help = "Address to list vaults for, instead of a wallet account",
+            conflicts_with = "account_name"
+        )]
+        address: Option<Address>,
+    },
+    /// List the resources held by an account
+    #[clap(alias = "resources")]
+    ListResources {
+        #[arg(short, long, help = "Account name. Defaults to the default account")]
+        account_name: Option<String>,
+        #[arg(
+            long,
+            help = "Address to list resources for, instead of a wallet account",
+            conflicts_with = "account_name"
+        )]
+        address: Option<Address>,
+    },
+    /// Transfer funds to another account (public transfer)
+    Transfer {
+        #[arg(
+            short = 's',
+            long,
+            help = "The source account name. Defaults to the default account"
+        )]
+        from_account: Option<String>,
+        #[arg(short = 't', long, help = "The destination address")]
+        to_address: Address,
+        #[arg(short = 'a', long, help = "The amount to transfer (in micro XTR)")]
         amount: u64,
-    },
-    #[clap(subcommand)]
-    Transfer(TransferCommand),
-    #[clap(alias = "cancel")]
-    CancelTransfer {
-        #[arg(short = 'l', long, help = "The lock ID of the transfer to cancel")]
-        lock_id: Option<WalletLockId>,
         #[arg(
-            short = 'p',
+            short = 'f',
             long,
-            help = "Path to the transfer JSON file to cancel the transfer for"
+            default_value_t = DEFAULT_FEE,
+            help = "Max fee to pay for the transfer (in micro XTR)"
         )]
-        transfer_path: Option<PathBuf>,
+        fee_amount: u64,
     },
-    /// Create new seed words
-    CreateSeedWords,
+    /// Show the transaction history recorded by this wallet
+    History {
+        #[arg(short, long, help = "Only show transactions for this account")]
+        account_name: Option<String>,
+    },
     /// Show wallet info
     ShowInfo,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum SettingKey {
+    /// The network this wallet operates on
+    Network,
+    /// The Ootle indexer API URL
+    IndexerUrl,
 }
 
 #[tokio::main]
@@ -173,320 +252,975 @@ async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
     let cli = Cli::parse();
 
-    let mut wallet = init_wallet(&cli.common).context("Failed to initialize wallet SDK")?;
+    let mut store =
+        WalletStore::open(&cli.common.database_file).context("Failed to open wallet database")?;
 
     match cli.command {
         Command::ShowInfo => {
+            let network = store.network()?;
             cli_println!("Ootle Wallet CLI");
             cli_println!("================");
-            cli_println!(White, "Network: {}", wallet.network());
-            cli_println!(White, "Database: {}", cli.common.database_file.display());
-            cli_println!(White, "Indexer URL: {}", cli.common.indexer_url);
-            cli_println!("================");
-        }
-        Command::ImportViewKey {
-            view_private_key,
-            spend_public_key,
-        } => {
-            let view_private_key =
-                Zeroizing::new(from_hex(&view_private_key).context("Invalid view private key")?);
-            let view_private_key = RistrettoSecretKey::from_canonical_bytes(&view_private_key)
-                .context("Invalid view private key")?;
-
-            wallet.import_view_only_account(
-                &spend_public_key.to_string(),
-                &view_private_key,
-                spend_public_key,
-            )?;
-            cli_println!(
-                ANSI_GREEN,
-                "✔️ View-only account {} imported successfully",
-                spend_public_key
-            );
-        }
-        Command::AddResource {
-            resource_address,
-            account_name,
-        } => {
-            let account = wallet.get_account_or_default(account_name.as_deref())?; // Validate account exists
-
-            wallet
-                .sdk()
-                .accounts_api()
-                .associate_stealth_resource(account.component_address(), resource_address)?;
-            cli_println!(
-                ANSI_GREEN,
-                "✔️ Resource {} added to account '{}'",
-                resource_address,
-                account.account().name.as_deref().unwrap_or("<unnamed>")
-            );
-        }
-        Command::CancelTransfer {
-            lock_id,
-            transfer_path,
-        } => {
-            let lock_id = match (lock_id, transfer_path) {
-                (Some(id), None) => id,
-                (None, Some(path)) => {
-                    let transfer: TransferOutput = serde_json::from_reader(
-                        std::fs::File::open(&path).context("failed to open transfer file")?,
-                    )
-                    .context("failed to parse transfer file")?;
-                    transfer.lock_id
-                }
-                (Some(_), Some(_)) => {
-                    anyhow::bail!("Specify either lock_id or transfer_path, not both");
-                }
-                (None, None) => {
-                    anyhow::bail!(
-                        "You must specify either lock_id or transfer_path to cancel a transfer"
-                    );
-                }
-            };
-
-            wallet
-                .sdk()
-                .locks_api()
-                .release_lock(lock_id)
-                .context("failed to release transfer lock")?;
-            cli_println!(
-                ANSI_GREEN,
-                "✔️ Transfer with lock ID {} cancelled successfully",
-                lock_id
-            );
-        }
-        Command::Scan { account_name } => {
-            // This is mainly to check that the user set a working URL
-            wallet
-                .check_indexer_connection()
-                .await
-                .context("indexer connection failed")?;
-            cli_println!(ANSI_GREEN, "✔️ Connected to indexer");
-
-            // Get accounts to scan - either the specified account or all accounts
-            let accounts = match account_name.as_deref() {
-                Some(name) => {
-                    vec![wallet.sdk().accounts_api().get_account_by_name(name)?]
+            match network {
+                Some(network) => {
+                    cli_println!(White, "Network: {}", network);
+                    match resolve_indexer_url(&cli.common, &store, network) {
+                        Ok(url) => cli_println!(White, "Indexer URL: {}", url),
+                        Err(_) => cli_println!(White, "Indexer URL: not set (use --indexer-url)"),
+                    }
                 }
                 None => {
-                    // Scan all accounts
-                    let accounts = wallet.sdk().accounts_api().get_many(0, 100)?;
-                    let mut res = vec![];
-                    for account in accounts {
-                        let address = wallet
-                            .sdk()
-                            .accounts_api()
-                            .get_address_for_account(&account)?;
-                        res.push(AccountWithAddress::new(
-                            account,
-                            address.into_byte_address(),
-                        ));
-                    }
-                    res
+                    cli_println!(White, "Network: not set. Run `setup` first");
                 }
-            };
+            }
+            cli_println!(White, "Database: {}", cli.common.database_file.display());
+            cli_println!(White, "Accounts: {}", store.count_accounts()?);
+            cli_println!("================");
+        }
+        Command::Setup {
+            account_name,
+            restore,
+            no_fund,
+            fee_amount,
+        } => {
+            setup(
+                &cli.common,
+                &mut store,
+                account_name,
+                restore,
+                no_fund,
+                fee_amount,
+            )
+            .await?;
+        }
+        Command::CreateAccount {
+            name,
+            set_default,
+            output_path,
+            no_fund,
+            fee_amount,
+        } => {
+            let network = resolve_network(&cli.common, &store)?;
+            let (seed, _) = load_cipher_seed(&cli.common, &store)?;
+            let index = store.next_derivation_index()?;
+            let secret = keys::derive_account_secret_key(&seed, network, index);
+            let account = store.insert_account(&name, index, &secret.to_address(), set_default)?;
 
-            if accounts.is_empty() {
-                cli_println!(ANSI_WHITE, "No accounts found to scan");
+            cli_println!(ANSI_GREEN, "✔️ Account '{}' created successfully", name);
+            print_account_keys(&account, &secret);
+            cli_println!(
+                ANSI_YELLOW,
+                "⚠️ Keep the secret keys safe. Anyone with the secret account key can spend your funds."
+            );
+
+            if let Some(path) = output_path {
+                write_to_json_file(&account, &path)
+                    .context("failed to write account details to file")?;
+                cli_println!(ANSI_WHITE, "Account details written to {}", path.display());
+            }
+
+            if no_fund {
+                return Ok(());
+            }
+            if !network.is_testnet() {
+                cli_println!(
+                    ANSI_WHITE,
+                    "ℹ️ There is no faucet on {}. Skipping funding.",
+                    network
+                );
                 return Ok(());
             }
 
-            cli_println!(ANSI_BLUE, "Scanning {} account(s)...", accounts.len());
-
-            for account in accounts {
-                let component_address = *account.component_address();
-                cli_println!(
-                    ANSI_BLUE,
-                    "\n--- Scanning account '{}' ({}) ---",
-                    account.account.name.as_deref().unwrap_or("<unnamed>"),
-                    component_address
-                );
-
-                spinner(
-                    format!(
-                        "Refreshing account {}... This may take a while.",
-                        component_address
-                    ),
-                    wallet.refresh_account(component_address),
-                    |mut spinner, result| match result {
-                        Ok(true) => {
-                            spinner.stop_and_persist(
-                                "✔️",
-                                format!(
-                                    "Account {} refreshed and found balance updates",
-                                    component_address
-                                ),
-                            );
-                        }
-                        Ok(false) => {
-                            spinner.stop_and_persist(
-                                "✔️",
-                                format!("Account {} refreshed. No changes.", component_address),
-                            );
-                        }
-                        Err(err) => {
-                            spinner.stop_and_persist(
-                                "❌",
-                                format!(
-                                    "Failed to refresh account: {err}. Will display last known balances"
-                                ),
-                            );
-                        }
-                    },
-                )
-                .await;
-                spinner(
-                    "Waiting for scanning to complete... This may take a while.",
-                    wallet.scan_for_utxos(account),
-                    |mut spinner, res| match res {
-                        Ok(_) => {
-                            spinner.stop_and_persist("✔️", "UTXO Scanning - Done".to_string());
-                        }
-                        Err(err) => {
-                            spinner.stop_and_persist("❌", format!("UTXO Scanning failed: {err}"));
-                        }
-                    },
-                )
-                .await;
+            let mut provider = connect_with_wallet(&cli.common, &store, network, secret).await?;
+            request_faucet_funds(&mut provider, &store, &account, fee_amount).await?;
+        }
+        Command::ListAccounts => {
+            let accounts = store.list_accounts()?;
+            if accounts.is_empty() {
+                cli_println!(ANSI_WHITE, "No accounts in the wallet. Run `setup` first");
+                return Ok(());
             }
-
-            let events = wallet.drain_events();
-            cli_println!(ANSI_BLUE, "\nEvents:");
-            if events.is_empty() {
-                cli_println!(ANSI_WHITE, "No events");
-            } else {
-                for event in events {
-                    cli_println!(ANSI_WHITE, "   - {:?}", event);
+            let mut table = Table::new();
+            table.set_titles(vec!["Name", "Address", "Default"]);
+            for account in accounts {
+                table.add_row(table_row![
+                    account.name,
+                    account.address,
+                    if account.is_default { "✔" } else { "" }
+                ]);
+            }
+            table.print_stdout();
+        }
+        Command::ShowKeys { account_name } => {
+            let network = resolve_network(&cli.common, &store)?;
+            let account = store.get_account(account_name.as_deref())?;
+            let (seed, _) = load_cipher_seed(&cli.common, &store)?;
+            let secret = keys::derive_account_secret_key(&seed, network, account.derivation_index);
+            print_account_keys(&account, &secret);
+            cli_println!(
+                ANSI_YELLOW,
+                "⚠️ Keep the secret keys safe. Anyone with the secret account key can spend your funds."
+            );
+        }
+        Command::ShowSeedWords => {
+            let (seed, passphrase) = load_cipher_seed(&cli.common, &store)?;
+            let words = seed
+                .to_mnemonic(MnemonicLanguage::English, passphrase)
+                .map_err(|e| anyhow::anyhow!("failed to encode seed words: {e}"))?;
+            cli_println!(ANSI_WHITE, "{}", words.join(" ").reveal());
+            cli_println!(
+                ANSI_YELLOW,
+                "⚠️ Anyone with these seed words (and your passphrase, if set) can spend your funds."
+            );
+        }
+        Command::SetDefaultAccount { name } => {
+            store.set_default_account(&name)?;
+            cli_println!(
+                ANSI_GREEN,
+                "✔️ Account '{}' is now the default account",
+                name
+            );
+        }
+        Command::Set { key, value } => match key {
+            SettingKey::Network => {
+                let network: Network = value
+                    .parse()
+                    .map_err(|e| anyhow::anyhow!("invalid network '{value}': {e:?}"))?;
+                store.set_network(network)?;
+                // The account keys are network-independent, but the stored address
+                // encodings include the network and must be rewritten
+                store.update_account_addresses(network)?;
+                cli_println!(ANSI_GREEN, "✔️ Network set to {}", network);
+            }
+            SettingKey::IndexerUrl => {
+                if value.is_empty() {
+                    store.clear_indexer_url()?;
+                    cli_println!(ANSI_GREEN, "✔️ Indexer URL reset to the network default");
+                } else {
+                    let url: Url = value
+                        .parse()
+                        .with_context(|| format!("invalid indexer URL '{value}'"))?;
+                    store.set_indexer_url(url.as_str())?;
+                    cli_println!(ANSI_GREEN, "✔️ Indexer URL set to {}", url);
                 }
             }
+        },
+        Command::Faucet {
+            account_name,
+            fee_amount,
+        } => {
+            let network = resolve_network(&cli.common, &store)?;
+            if !network.is_testnet() {
+                bail!("There is no faucet on {}", network);
+            }
+            let account = store.get_account(account_name.as_deref())?;
+            let (seed, _) = load_cipher_seed(&cli.common, &store)?;
+            let secret = keys::derive_account_secret_key(&seed, network, account.derivation_index);
+            let mut provider = connect_with_wallet(&cli.common, &store, network, secret).await?;
+            request_faucet_funds(&mut provider, &store, &account, fee_amount).await?;
         }
-        Command::Balance { account_name } => {
-            let account = match account_name {
-                Some(name) => wallet.sdk().accounts_api().get_account_by_name(&name)?,
-                None => wallet.sdk().accounts_api().get_default()?,
+        Command::Balance {
+            account_name,
+            address,
+        } => {
+            let (address, network) =
+                resolve_query_address(&cli.common, &store, account_name.as_deref(), address)?;
+            show_balances(&cli.common, &store, network, &address).await?;
+        }
+        Command::ListVaults {
+            account_name,
+            address,
+        } => {
+            let (address, network) =
+                resolve_query_address(&cli.common, &store, account_name.as_deref(), address)?;
+            let provider = connect_readonly(&cli.common, &store, network).await?;
+            let component_address = address.to_account_address();
+            let Some(vaults) = fetch_account_vaults(&provider, component_address).await? else {
+                cli_println!(
+                    ANSI_WHITE,
+                    "Account {} is not on-chain yet. Fund it to create it.",
+                    component_address
+                );
+                return Ok(());
             };
-            let BalanceStuff { balances, utxos } =
-                wallet.get_balances_for_account(account.component_address())?;
-            cli_println!(
-                Blue,
-                "Balances for account '{}':",
-                account.account().name.as_deref().unwrap_or("<unnamed>")
-            );
 
+            cli_println!(ANSI_BLUE, "Vaults for account:");
             cli_println!(ANSI_BLUE, "-----------------------------------");
-            cli_println!(ANSI_WHITE, "Address: {}", account.address());
-            cli_println!(ANSI_WHITE, "Component: {}", account.component_address());
-            cli_println!(ANSI_WHITE, "Public Key: {}", account.owner_public_key());
+            cli_println!(ANSI_WHITE, "Address: {}", address);
+            cli_println!(ANSI_WHITE, "Component: {}", component_address);
             cli_println!(ANSI_BLUE, "-----------------------------------");
             cli_println!();
+
+            if vaults.is_empty() {
+                cli_println!(ANSI_WHITE, "No vaults");
+                return Ok(());
+            }
+            let mut table = Table::new();
+            table.set_titles(vec![
+                "Vault", "Resource", "Symbol", "Type", "Balance", "Locked",
+            ]);
+            for vault in vaults {
+                let resource = fetch_resource_info(&provider, vault.resource_address).await;
+                table.add_row(table_row![
+                    vault.vault_id,
+                    vault.resource_address,
+                    resource.symbol,
+                    vault.resource_type,
+                    vault
+                        .balance
+                        .to_decimal_string(resource.divisibility.into()),
+                    vault
+                        .locked_balance
+                        .to_decimal_string(resource.divisibility.into())
+                ]);
+            }
+            table.print_stdout();
+        }
+        Command::ListResources {
+            account_name,
+            address,
+        } => {
+            let (address, network) =
+                resolve_query_address(&cli.common, &store, account_name.as_deref(), address)?;
+            let provider = connect_readonly(&cli.common, &store, network).await?;
+            let component_address = address.to_account_address();
+            let Some(vaults) = fetch_account_vaults(&provider, component_address).await? else {
+                cli_println!(
+                    ANSI_WHITE,
+                    "Account {} is not on-chain yet. Fund it to create it.",
+                    component_address
+                );
+                return Ok(());
+            };
+
+            cli_println!(ANSI_BLUE, "Resources for account:");
+            cli_println!(ANSI_BLUE, "-----------------------------------");
+            cli_println!(ANSI_WHITE, "Address: {}", address);
+            cli_println!(ANSI_WHITE, "Component: {}", component_address);
+            cli_println!(ANSI_BLUE, "-----------------------------------");
+            cli_println!();
+
+            if vaults.is_empty() {
+                cli_println!(ANSI_WHITE, "No resources");
+                return Ok(());
+            }
+            // Aggregate balances across the account's vaults per resource
+            let mut resources: std::collections::BTreeMap<_, ResourceSummary> =
+                std::collections::BTreeMap::new();
+            for vault in vaults {
+                let entry =
+                    resources
+                        .entry(vault.resource_address)
+                        .or_insert_with(|| ResourceSummary {
+                            resource_type: vault.resource_type,
+                            balance: Amount::zero(),
+                            locked_balance: Amount::zero(),
+                            num_vaults: 0,
+                        });
+                entry.balance += vault.balance;
+                entry.locked_balance += vault.locked_balance;
+                entry.num_vaults += 1;
+            }
 
             let mut table = Table::new();
             table.set_titles(vec![
                 "Resource",
-                "Balance",
-                "Pvt Balance",
-                "#UTXOs",
+                "Symbol",
                 "Type",
-                "Vault",
+                "Divisibility",
+                "Balance",
+                "Locked",
+                "#Vaults",
             ]);
-
-            for balance in balances {
+            for (resource_address, summary) in resources {
+                let resource = fetch_resource_info(&provider, resource_address).await;
                 table.add_row(table_row![
-                    balance
-                        .token_symbol
-                        .unwrap_or_else(|| balance.resource_address.to_string()),
-                    balance
+                    resource_address,
+                    resource.symbol,
+                    summary.resource_type,
+                    resource.divisibility,
+                    summary
                         .balance
-                        .to_decimal_string(balance.divisibility.into()),
-                    balance
-                        .confidential_balance
-                        .to_decimal_string(balance.divisibility.into()),
-                    balance.num_outputs,
-                    balance.resource_type,
-                    balance.vault_address.display(),
+                        .to_decimal_string(resource.divisibility.into()),
+                    summary
+                        .locked_balance
+                        .to_decimal_string(resource.divisibility.into()),
+                    summary.num_vaults
                 ]);
             }
             table.print_stdout();
-
-            if !utxos.is_empty() {
-                cli_println!();
-                cli_println!(ANSI_BLUE, "UTXOs:");
-                let resource = wallet.sdk().resources_api().get(&XTR)?;
-                let mut table = Table::new();
-                table.set_titles(vec!["Commitment", "Value", "Message"]);
-
-                for utxo in utxos {
-                    let message = utxo.memo.as_ref().and_then(|m| m.as_memo_message());
-                    table.add_row(table_row![
-                        utxo.commitment,
-                        Amount::from(utxo.value).to_decimal_string(resource.divisibility() as u32),
-                        message.display()
-                    ]);
-                }
-                table.print_stdout();
-            }
         }
-        Command::CreateSeedWords => {
-            let seed_words = wallet.create_seed_words()?;
-            cli_println!(ANSI_GREEN, "✔️ Seed words created successfully");
-            cli_println!(ANSI_WHITE, "{}", seed_words.join(" ").reveal());
-        }
-        Command::CreateAccount {
-            name,
-            set_active,
-            output_path,
-        } => {
-            let account = wallet.create_account(&name, set_active)?;
-            cli_println!(ANSI_GREEN, "✔️ Account '{}' created successfully", name);
-
-            let json = serde_json::json!({
-                "component_address": account.component_address(),
-                "address": account.address(),
-                "account_public_key": account.owner_public_key(),
-                "key_index": account.owner_key_id(),
-                "name": name,
-            });
-            cli_println!(ANSI_WHITE, "{:#}", json);
-            if let Some(path) = output_path {
-                write_to_json_file(&json, path.as_ref())
-                    .context("failed to write account details to file")?;
-                cli_println!(ANSI_WHITE, "Account details written to {}", path.display());
-            }
-        }
-        Command::GetFaucetCoins {
-            account_name,
+        Command::Transfer {
+            from_account,
+            to_address,
             amount,
+            fee_amount,
         } => {
-            let account = wallet.get_account_or_default(account_name.as_deref())?;
-
-            spinner(
-                "🤑 Requesting testnet faucet coins...",
-                wallet.request_testnet_faucet_coins(account.component_address(), amount),
-                |mut spinner, result| match result {
-                    Ok(_) => {
-                        spinner.stop_and_persist("✔️", "Testnet faucet coins received".to_string());
-                    }
-                    Err(err) => {
-                        spinner.stop_and_persist(
-                            "❌",
-                            format!("Failed to get testnet faucet coins: {err}"),
-                        );
-                    }
-                },
+            let network = resolve_network(&cli.common, &store)?;
+            if amount == 0 {
+                bail!("Transfer amount must be greater than zero");
+            }
+            if to_address.network() != network {
+                bail!(
+                    "Destination address is for network {}, but this wallet is on {}",
+                    to_address.network(),
+                    network
+                );
+            }
+            let account = store.get_account(from_account.as_deref())?;
+            let (seed, _) = load_cipher_seed(&cli.common, &store)?;
+            let secret = keys::derive_account_secret_key(&seed, network, account.derivation_index);
+            let mut provider = connect_with_wallet(&cli.common, &store, network, secret).await?;
+            transfer(
+                &mut provider,
+                &store,
+                &account,
+                &to_address,
+                amount,
+                fee_amount,
             )
-            .await;
-            cli_println!(
-                ANSI_GREEN,
-                "✔️ Account '{}' has testnet coins. Remember to scan to see them in your balance.",
-                account.name().display()
-            );
+            .await?;
         }
-        Command::Transfer(command) => {
-            handle_transfer_command(&mut wallet, command).await?;
+        Command::History { account_name } => {
+            let transactions = store.list_transactions(account_name.as_deref())?;
+            if transactions.is_empty() {
+                cli_println!(ANSI_WHITE, "No transactions recorded");
+                return Ok(());
+            }
+            let mut table = Table::new();
+            table.set_titles(vec![
+                "Transaction",
+                "Account",
+                "Kind",
+                "Status",
+                "Details",
+                "Time",
+            ]);
+            for tx in transactions {
+                table.add_row(table_row![
+                    tx.transaction_id,
+                    tx.account_name,
+                    tx.kind,
+                    tx.status,
+                    tx.details,
+                    tx.created_at
+                ]);
+            }
+            table.print_stdout();
         }
     }
 
     Ok(())
+}
+
+async fn setup(
+    common: &CommonArgs,
+    store: &mut WalletStore,
+    account_name: Option<String>,
+    restore: bool,
+    no_fund: bool,
+    fee_amount: u64,
+) -> anyhow::Result<()> {
+    if store.is_initialized()? {
+        bail!(
+            "Wallet at {} is already set up. Use a different --database-file to create a new wallet",
+            common.database_file.display()
+        );
+    }
+
+    cli_println!(ANSI_BLUE, "Ootle wallet setup");
+    cli_println!(ANSI_BLUE, "==================");
+
+    let interactive = account_name.is_none();
+
+    // 1. Network
+    let network = match common.network {
+        Some(network) => network,
+        None => loop {
+            let input = prompt_with_default(
+                "Network (esmeralda, localnet, igor, nextnet, stagenet, mainnet)",
+                "esmeralda",
+            )?;
+            match input.parse::<Network>() {
+                Ok(network) => break network,
+                Err(e) => cli_println!(ANSI_YELLOW, "{:?}", e),
+            }
+        },
+    };
+
+    // 2. Indexer API URL
+    let indexer_url = match (
+        common.indexer_url.as_ref(),
+        known_default_indexer_url(network),
+    ) {
+        (Some(url), _) => url.to_string(),
+        (None, default) if interactive => loop {
+            let input = match default {
+                Some(default) => prompt_with_default("Indexer API URL", default)?,
+                None => prompt_line("Indexer API URL: ")?,
+            };
+            if input.is_empty() {
+                cli_println!(ANSI_YELLOW, "An indexer URL is required for {}", network);
+                continue;
+            }
+            match input.parse::<Url>() {
+                Ok(url) => break url.to_string(),
+                Err(e) => cli_println!(ANSI_YELLOW, "Invalid URL: {}", e),
+            }
+        },
+        (None, Some(default)) => default.to_string(),
+        (None, None) => {
+            bail!("There is no default indexer URL for {network}. Provide one with --indexer-url")
+        }
+    };
+
+    // 3. Optional passphrase protecting the seed
+    let passphrase = match common.password.as_ref() {
+        Some(p) => Some(SafePassword::from(p.clone())),
+        None => prompt_new_passphrase()?.map(|p| SafePassword::from(p.to_string())),
+    };
+
+    // 4. Create or restore the seed
+    let seed = if restore {
+        let words_line =
+            Zeroizing::new(prompt_line("Enter your seed words separated by spaces: ")?);
+        let words = SeedWords::new(
+            words_line
+                .split_whitespace()
+                .map(|w| Hidden::hide(w.to_string()))
+                .collect(),
+        );
+        CipherSeed::from_mnemonic(&words, passphrase.clone()).map_err(|e| {
+            anyhow::anyhow!("Failed to restore from seed words (wrong passphrase?): {e}")
+        })?
+    } else {
+        CipherSeed::random()
+    };
+
+    // 5. Persist
+    store.set_network(network)?;
+    store.set_indexer_url(&indexer_url)?;
+    let enciphered = seed
+        .encipher(passphrase.clone())
+        .map_err(|e| anyhow::anyhow!("failed to encipher seed: {e}"))?;
+    store.set_enciphered_cipher_seed(&enciphered)?;
+    cli_println!(
+        ANSI_GREEN,
+        "✔️ Wallet initialized on {} (indexer: {})",
+        network,
+        indexer_url
+    );
+
+    // 6. Show the seed words for a newly created seed
+    if !restore {
+        let words = seed
+            .to_mnemonic(MnemonicLanguage::English, passphrase.clone())
+            .map_err(|e| anyhow::anyhow!("failed to encode seed words: {e}"))?;
+        cli_println!();
+        cli_println!(ANSI_BLUE, "Your seed words:");
+        cli_println!(ANSI_WHITE, "{}", words.join(" ").reveal());
+        cli_println!(
+            ANSI_YELLOW,
+            "⚠️ Write these down and keep them safe. They are the only way to recover your wallet."
+        );
+        cli_println!();
+    }
+
+    // 7. First account
+    let name = match account_name {
+        Some(name) => name,
+        None => prompt_with_default("Name your first account", "default")?,
+    };
+    let index = store.next_derivation_index()?;
+    let secret = keys::derive_account_secret_key(&seed, network, index);
+    let account = store.insert_account(&name, index, &secret.to_address(), true)?;
+    cli_println!(ANSI_GREEN, "✔️ Account '{}' created", name);
+    cli_println!(ANSI_WHITE, "Address: {}", account.address);
+    cli_println!(
+        ANSI_WHITE,
+        "Component: {}",
+        account.account_component_address
+    );
+    cli_println!(
+        ANSI_WHITE,
+        "Use `show-keys` to view the account's secret keys."
+    );
+
+    // 8. Fund on testnets
+    if no_fund || !network.is_testnet() {
+        if !network.is_testnet() {
+            cli_println!(ANSI_WHITE, "ℹ️ There is no faucet on {}.", network);
+        }
+        return Ok(());
+    }
+    let fund = if interactive {
+        prompt_yes_no("Fund the account from the testnet faucet?", true)?
+    } else {
+        true
+    };
+    if fund {
+        let mut provider = connect_with_wallet(common, store, network, secret).await?;
+        request_faucet_funds(&mut provider, store, &account, fee_amount).await?;
+    }
+    Ok(())
+}
+
+fn print_account_keys(account: &AccountRecord, secret: &OotleSecretKey) {
+    let account_secret_hex = Zeroizing::new(to_hex(secret.account_secret().as_bytes()));
+    let view_secret_hex = Zeroizing::new(to_hex(secret.view_only_secret().as_bytes()));
+    cli_println!(ANSI_BLUE, "-----------------------------------");
+    cli_println!(ANSI_WHITE, "Name: {}", account.name);
+    cli_println!(ANSI_WHITE, "Address: {}", account.address);
+    cli_println!(
+        ANSI_WHITE,
+        "Component: {}",
+        account.account_component_address
+    );
+    cli_println!(
+        ANSI_WHITE,
+        "Account public key: {}",
+        account.account_public_key
+    );
+    cli_println!(ANSI_WHITE, "View public key: {}", account.view_public_key);
+    cli_println!(ANSI_WHITE, "Secret account key: {}", *account_secret_hex);
+    cli_println!(ANSI_WHITE, "Secret view key: {}", *view_secret_hex);
+    cli_println!(ANSI_BLUE, "-----------------------------------");
+}
+
+/// Requests the fixed faucet amount, creating the on-chain account component if it does not
+/// exist yet. The fee is paid from the freshly received faucet funds, so a brand-new account
+/// needs no prior balance.
+async fn request_faucet_funds(
+    provider: &mut IndexerProvider<OotleWallet>,
+    store: &WalletStore,
+    account: &AccountRecord,
+    fee_amount: u64,
+) -> anyhow::Result<()> {
+    let unsigned = IFaucet::new(provider)
+        .take_faucet_funds()
+        .pay_fee(fee_amount)
+        .prepare()
+        .await
+        .context("failed to prepare faucet transaction")?;
+
+    let transaction = TransactionRequest::new()
+        .with_transaction(unsigned)
+        .build(provider.wallet())
+        .await
+        .context("failed to sign faucet transaction")?;
+
+    let pending = provider
+        .send_transaction(transaction)
+        .await
+        .context("failed to submit faucet transaction")?;
+    let tx_id = pending.tx_id();
+
+    let outcome = spinner(
+        format!("🤑 Requesting testnet funds (transaction {tx_id})..."),
+        pending.watch(),
+        |mut spinner, result| match result {
+            Ok(outcome) => {
+                spinner.stop_and_persist("✔️", format!("Transaction {tx_id} finalized"));
+                Ok(outcome)
+            }
+            Err(err) => {
+                spinner.stop_and_persist("❌", format!("Transaction {tx_id} failed"));
+                Err(err)
+            }
+        },
+    )
+    .await;
+
+    let details = format!(
+        "{} XTR from faucet",
+        Amount::from(XTR_FAUCET_AMOUNT).to_decimal_string(6)
+    );
+    record_outcome(
+        store,
+        &tx_id.to_string(),
+        &account.name,
+        "faucet",
+        &details,
+        &outcome,
+    );
+    check_watch_result(outcome)?;
+    cli_println!(
+        ANSI_GREEN,
+        "✔️ Account '{}' funded with {} XTR from the testnet faucet",
+        account.name,
+        Amount::from(XTR_FAUCET_AMOUNT).to_decimal_string(6)
+    );
+    Ok(())
+}
+
+async fn transfer(
+    provider: &mut IndexerProvider<OotleWallet>,
+    store: &WalletStore,
+    account: &AccountRecord,
+    to_address: &Address,
+    amount: u64,
+    fee_amount: u64,
+) -> anyhow::Result<()> {
+    let unsigned = IAccount::new(provider)
+        .pay_fee(fee_amount)
+        .public_transfer(to_address, TARI_TOKEN, amount)
+        .prepare()
+        .await
+        .context("failed to prepare transfer transaction")?;
+
+    let transaction = TransactionRequest::new()
+        .with_transaction(unsigned)
+        .build(provider.wallet())
+        .await
+        .context("failed to sign transfer transaction")?;
+
+    let pending = provider
+        .send_transaction(transaction)
+        .await
+        .context("failed to submit transfer transaction")?;
+    let tx_id = pending.tx_id();
+
+    let outcome = spinner(
+        format!("Submitting transaction {tx_id}..."),
+        pending.watch(),
+        |mut spinner, result| match result {
+            Ok(outcome) => {
+                spinner.stop_and_persist("✔️", format!("Transaction {tx_id} finalized"));
+                Ok(outcome)
+            }
+            Err(err) => {
+                spinner.stop_and_persist("❌", format!("Transaction {tx_id} failed"));
+                Err(err)
+            }
+        },
+    )
+    .await;
+
+    let details = format!(
+        "{} XTR to {}",
+        Amount::from(amount).to_decimal_string(6),
+        to_address
+    );
+    record_outcome(
+        store,
+        &tx_id.to_string(),
+        &account.name,
+        "transfer",
+        &details,
+        &outcome,
+    );
+    check_watch_result(outcome)?;
+    cli_println!(
+        ANSI_GREEN,
+        "✔️ Transferred {} XTR to {}",
+        Amount::from(amount).to_decimal_string(6),
+        to_address
+    );
+    Ok(())
+}
+
+async fn show_balances(
+    common: &CommonArgs,
+    store: &WalletStore,
+    network: Network,
+    address: &Address,
+) -> anyhow::Result<()> {
+    let component_address = address.to_account_address();
+    let provider = connect_readonly(common, store, network).await?;
+
+    if provider.get_substate(component_address).await?.is_none() {
+        cli_println!(
+            ANSI_WHITE,
+            "Account {} is not on-chain yet. Fund it to create it.",
+            component_address
+        );
+        return Ok(());
+    }
+
+    let balances = provider
+        .get_account_balances(component_address)
+        .await
+        .context("failed to fetch account balances")?;
+
+    cli_println!(ANSI_BLUE, "Balances for account:");
+    cli_println!(ANSI_BLUE, "-----------------------------------");
+    cli_println!(ANSI_WHITE, "Address: {}", address);
+    cli_println!(ANSI_WHITE, "Component: {}", component_address);
+    cli_println!(ANSI_BLUE, "-----------------------------------");
+    cli_println!();
+
+    let mut table = Table::new();
+    table.set_titles(vec!["Resource", "Balance"]);
+    for (resource_address, balance) in balances {
+        let resource = fetch_resource_info(&provider, resource_address).await;
+        table.add_row(table_row![
+            resource.symbol,
+            balance.to_decimal_string(resource.divisibility.into())
+        ]);
+    }
+    table.print_stdout();
+    Ok(())
+}
+
+/// Resolves the address and network to query: an explicit address carries its own network
+/// and needs no wallet; otherwise the named (or default) wallet account is used.
+fn resolve_query_address(
+    common: &CommonArgs,
+    store: &WalletStore,
+    account_name: Option<&str>,
+    address: Option<Address>,
+) -> anyhow::Result<(Address, Network)> {
+    match address {
+        Some(address) => {
+            let network = address.network();
+            Ok((address, network))
+        }
+        None => {
+            let network = resolve_network(common, store)?;
+            let account = store.get_account(account_name)?;
+            let address = account.address.parse().map_err(|e| {
+                anyhow::anyhow!("invalid address in account '{}': {e}", account.name)
+            })?;
+            Ok((address, network))
+        }
+    }
+}
+
+struct VaultRow {
+    vault_id: VaultId,
+    resource_address: ResourceAddress,
+    resource_type: ResourceType,
+    balance: Amount,
+    locked_balance: Amount,
+}
+
+struct ResourceSummary {
+    resource_type: ResourceType,
+    balance: Amount,
+    locked_balance: Amount,
+    num_vaults: usize,
+}
+
+/// Fetches the vaults of an account by walking the vault IDs in its component state.
+/// Returns `None` if the account component does not exist on-chain.
+async fn fetch_account_vaults<W>(
+    provider: &IndexerProvider<W>,
+    component_address: ComponentAddress,
+) -> anyhow::Result<Option<Vec<VaultRow>>> {
+    let Some(substate) = provider.get_substate(component_address).await? else {
+        return Ok(None);
+    };
+    let component = substate.substate_value().component().ok_or_else(|| {
+        anyhow::anyhow!("expected a component substate for account {component_address}")
+    })?;
+    let indexed = IndexedWellKnownTypes::from_value(component.state())
+        .map_err(|e| anyhow::anyhow!("failed to index account state: {e}"))?;
+
+    let mut vaults = Vec::with_capacity(indexed.vault_ids().len());
+    for vault_id in indexed.vault_ids() {
+        let Some(vault_substate) = provider.get_substate(SubstateId::Vault(*vault_id)).await?
+        else {
+            log::warn!("Vault {vault_id} referenced by account {component_address} not found");
+            continue;
+        };
+        let Some(vault) = vault_substate.into_substate_value().into_vault() else {
+            log::warn!("Substate {vault_id} is not a vault");
+            continue;
+        };
+        vaults.push(VaultRow {
+            vault_id: *vault_id,
+            resource_address: *vault.resource_address(),
+            resource_type: vault.resource_type(),
+            balance: vault.balance(),
+            locked_balance: vault.locked_balance(),
+        });
+    }
+    Ok(Some(vaults))
+}
+
+struct ResourceInfo {
+    symbol: String,
+    divisibility: u8,
+}
+
+/// Fetches a resource's token symbol and divisibility for display, falling back to the raw
+/// resource address and zero divisibility if the resource cannot be fetched.
+async fn fetch_resource_info<W>(
+    provider: &IndexerProvider<W>,
+    resource_address: ResourceAddress,
+) -> ResourceInfo {
+    if resource_address == TARI_TOKEN {
+        // The TARI token is built-in and has no fetchable resource substate
+        return ResourceInfo {
+            symbol: "XTR".to_string(),
+            divisibility: 6,
+        };
+    }
+    let resource = provider
+        .get_substate(resource_address)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| s.into_substate_value().into_resource());
+    ResourceInfo {
+        symbol: resource
+            .as_ref()
+            .and_then(|r| r.token_symbol().map(|s| s.to_owned()))
+            .unwrap_or_else(|| resource_address.to_string()),
+        divisibility: resource.as_ref().map(|r| r.divisibility()).unwrap_or(0),
+    }
+}
+
+/// Returns the wallet's network from the database, validating any explicitly provided
+/// `--network` flag against it.
+fn resolve_network(common: &CommonArgs, store: &WalletStore) -> anyhow::Result<Network> {
+    match (common.network, store.network()?) {
+        (Some(flag), Some(db)) if flag != db => bail!(
+            "--network {flag} conflicts with this wallet's network ({db}). The network is set during `setup`"
+        ),
+        (_, Some(db)) => Ok(db),
+        (Some(flag), None) => Ok(flag),
+        (None, None) => bail!("Wallet is not set up. Run `ootle setup` first"),
+    }
+}
+
+/// Loads and deciphers the wallet cipher seed, prompting for the passphrase if one is
+/// required and was not provided.
+fn load_cipher_seed(
+    common: &CommonArgs,
+    store: &WalletStore,
+) -> anyhow::Result<(CipherSeed, Option<SafePassword>)> {
+    let enciphered = store
+        .enciphered_cipher_seed()?
+        .ok_or_else(|| anyhow::anyhow!("Wallet is not set up. Run `ootle setup` first"))?;
+    let passphrase = common.password.clone().map(SafePassword::from);
+    match CipherSeed::from_enciphered_bytes(&enciphered, passphrase.clone()) {
+        Ok(seed) => Ok((seed, passphrase)),
+        Err(_) if passphrase.is_none() => {
+            let entered = SafePassword::from(
+                prompt::prompt_password_hidden("Wallet passphrase: ")?.to_string(),
+            );
+            let seed = CipherSeed::from_enciphered_bytes(&enciphered, Some(entered.clone()))
+                .map_err(|_| {
+                    anyhow::anyhow!("Failed to decrypt the wallet seed: wrong passphrase?")
+                })?;
+            Ok((seed, Some(entered)))
+        }
+        Err(_) => bail!("Failed to decrypt the wallet seed: wrong passphrase?"),
+    }
+}
+
+fn record_outcome(
+    store: &WalletStore,
+    tx_id: &str,
+    account_name: &str,
+    kind: &str,
+    details: &str,
+    outcome: &Result<TransactionOutcome, PendingTransactionError>,
+) {
+    let status = match outcome {
+        Ok(TransactionOutcome::Commit) => "committed",
+        Ok(TransactionOutcome::OnlyFeeCommit(_)) => "fee-only",
+        Ok(TransactionOutcome::Reject(_)) => "rejected",
+        Err(PendingTransactionError::Timeout { .. }) => "timeout",
+        Err(_) => "failed",
+    };
+    if let Err(err) = store.record_transaction(tx_id, account_name, kind, status, details) {
+        log::warn!("Failed to record transaction {tx_id} in the wallet database: {err}");
+    }
+}
+
+/// Converts a watch result into a final pass/fail, with a friendlier message for timeouts:
+/// a timed-out transaction may still finalize later.
+fn check_watch_result(
+    result: Result<TransactionOutcome, PendingTransactionError>,
+) -> anyhow::Result<()> {
+    match result {
+        Ok(TransactionOutcome::Commit) => Ok(()),
+        Ok(TransactionOutcome::OnlyFeeCommit(reason)) => {
+            bail!("Transaction failed (fees were charged): {reason}")
+        }
+        Ok(TransactionOutcome::Reject(reason)) => bail!("Transaction was rejected: {reason}"),
+        Err(PendingTransactionError::Timeout { tx_id }) => bail!(
+            "Timed out waiting for transaction {tx_id} to finalize. It may still complete - \
+             check `balance` in a little while"
+        ),
+        Err(err) => Err(err).context("failed waiting for the transaction to finalize"),
+    }
+}
+
+async fn connect_with_wallet(
+    common: &CommonArgs,
+    store: &WalletStore,
+    network: Network,
+    secret: OotleSecretKey,
+) -> anyhow::Result<IndexerProvider<OotleWallet>> {
+    let url = resolve_indexer_url(common, store, network)?;
+    let wallet = OotleWallet::new(PrivateKeyProvider::new(secret));
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_with_transaction_timeout(&url, TRANSACTION_TIMEOUT)
+        .await
+        .with_context(|| format!("failed to connect to indexer at {url}"))?;
+    check_indexer_network(&provider, network, &url).await?;
+    Ok(provider)
+}
+
+async fn connect_readonly(
+    common: &CommonArgs,
+    store: &WalletStore,
+    network: Network,
+) -> anyhow::Result<IndexerProvider<NoWallet>> {
+    let url = resolve_indexer_url(common, store, network)?;
+    let provider = ProviderBuilder::new()
+        .with_network(network)
+        .connect(&url)
+        .await
+        .with_context(|| format!("failed to connect to indexer at {url}"))?;
+    check_indexer_network(&provider, network, &url).await?;
+    Ok(provider)
+}
+
+async fn check_indexer_network<W>(
+    provider: &IndexerProvider<W>,
+    expected: Network,
+    url: &str,
+) -> anyhow::Result<()> {
+    let actual = provider
+        .get_network()
+        .await
+        .with_context(|| format!("failed to connect to indexer at {url}"))?;
+    if actual != expected {
+        bail!("Indexer at {url} is on network {actual}, but this wallet is on {expected}");
+    }
+    Ok(())
+}
+
+fn known_default_indexer_url(network: Network) -> Option<&'static str> {
+    match network {
+        Network::LocalNet | Network::Esmeralda => Some(ootle_rs::default_indexer_url(network)),
+        _ => None,
+    }
+}
+
+/// Resolution order: `--indexer-url` flag, then the wallet database setting, then the
+/// known default for the network.
+fn resolve_indexer_url(
+    common: &CommonArgs,
+    store: &WalletStore,
+    network: Network,
+) -> anyhow::Result<String> {
+    if let Some(url) = &common.indexer_url {
+        return Ok(url.to_string());
+    }
+    if let Some(url) = store.indexer_url()? {
+        return Ok(url);
+    }
+    match known_default_indexer_url(network) {
+        Some(url) => Ok(url.to_string()),
+        None => bail!(
+            "There is no default indexer URL for {network}. Set one with `set indexer-url <url>` or --indexer-url"
+        ),
+    }
 }
 
 fn write_to_json_file<T: serde::Serialize, P: AsRef<Path>>(
@@ -501,24 +1235,4 @@ fn write_to_json_file<T: serde::Serialize, P: AsRef<Path>>(
         .context("failed to open file for writing")?;
     serde_json::to_writer_pretty(&mut file, data).context("failed to encode data to file")?;
     Ok(())
-}
-
-fn init_wallet(common: &CommonArgs) -> anyhow::Result<Wallet> {
-    let store = SqliteWalletStore::try_open(&common.database_file)?;
-    store.run_migrations()?;
-    let indexer = IndexerRestApiNetworkInterface::new(common.indexer_url.clone());
-    let config = tari_ootle_wallet_sdk::WalletSdkConfig {
-        network: common.network,
-        override_keyring_password: Some(common.password.clone()),
-    };
-
-    let mut sdk =
-        Sdk::initialize_with_local_key_store(store, indexer, config, EpochBirthday::far_future())?;
-    // Load seed words if present. If we don't do this then the wallet will be in read-only mode
-    if sdk.load_seed_words()?.is_some() {
-        cli_println!(ANSI_BLUE, "✔️ Wallet is in read/write mode");
-    } else {
-        cli_println!(ANSI_GREEN, "✔️ Wallet is in read-only mode");
-    }
-    Ok(Wallet::new(sdk))
 }
