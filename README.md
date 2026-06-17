@@ -21,7 +21,7 @@ cargo build --release
 
 ```bash
 # Show help
-ootle --help
+ootle-wallet --help
 ```
 
 Common options (apply to all commands):
@@ -39,13 +39,13 @@ Runs you through the initial wallet setup: network, indexer URL, an optional pas
 new (or restored) seed words, the first account, and faucet funding on testnets:
 
 ```bash
-ootle setup
+ootle-wallet setup
 
 # Non-interactive
-ootle -n esmeralda setup --account-name main --no-fund
+ootle-wallet -n esmeralda setup --account-name main --no-fund
 
 # Restore a wallet from existing seed words
-ootle setup --restore
+ootle-wallet setup --restore
 ```
 
 The network and indexer URL are stored in the wallet database. Default indexer URLs:
@@ -55,59 +55,59 @@ The network and indexer URL are stored in the wallet database. Default indexer U
 
 ```bash
 # Change the indexer API URL (empty value resets to the network default)
-ootle set indexer-url https://my-indexer.example.com/
-ootle set indexer-url ""
+ootle-wallet set indexer-url https://my-indexer.example.com/
+ootle-wallet set indexer-url ""
 
 # Change the network (account addresses are re-encoded for the new network)
-ootle set network localnet
+ootle-wallet set network localnet
 ```
 
 ### Accounts and keys
 
 ```bash
 # Create another account (funds it from the faucet on testnets and prints its keys)
-ootle create-account --name alice
+ootle-wallet create-account --name alice
 
 # List accounts in the wallet
-ootle list-accounts
+ootle-wallet list-accounts
 
 # Show the keys of an account, including the secret account and view keys
-ootle show-keys -a alice
+ootle-wallet show-keys -a alice
 
 # Show the wallet seed words
-ootle show-seed-words
+ootle-wallet show-seed-words
 
 # Change the default account
-ootle set-default-account -n alice
+ootle-wallet set-default-account -n alice
 ```
 
 ### Get testnet funds
 
 ```bash
 # Fund the default account from the testnet faucet
-ootle faucet
+ootle-wallet faucet
 
 # Fund a specific account
-ootle faucet -a alice
+ootle-wallet faucet -a alice
 ```
 
 ### Check balances, vaults and resources
 
 ```bash
 # Default account
-ootle balance
+ootle-wallet balance
 
 # A specific account, or any address
-ootle balance -a alice
-ootle balance --address otl_esm_1...
+ootle-wallet balance -a alice
+ootle-wallet balance --address otl_esm_1...
 
 # List the on-chain vaults of an account (vault ID, resource, balances)
-ootle vaults
-ootle vaults -a alice
+ootle-wallet vaults
+ootle-wallet vaults -a alice
 
 # List the resources held by an account, aggregated across its vaults
-ootle resources
-ootle resources --address otl_esm_1...
+ootle-wallet resources
+ootle-wallet resources --address otl_esm_1...
 ```
 
 ### Transfer
@@ -115,17 +115,17 @@ ootle resources --address otl_esm_1...
 Public transfer of XTR to another address (amounts are in micro XTR):
 
 ```bash
-ootle transfer -t otl_esm_1... -a 1000000
+ootle-wallet transfer -t otl_esm_1... -a 1000000
 
 # From a specific account with a custom max fee
-ootle transfer -s alice -t otl_esm_1... -a 1000000 -f 2000
+ootle-wallet transfer -s alice -t otl_esm_1... -a 1000000 -f 2000
 ```
 
 ### Transaction history
 
 ```bash
-ootle history
-ootle history -a alice
+ootle-wallet history
+ootle-wallet history -a alice
 ```
 
 ## Development
@@ -135,6 +135,6 @@ cargo build
 cargo run -- --help
 ```
 
-The Ootle crates are pinned to a `tari-ootle` release tag in `Cargo.toml`. To develop
-against a local checkout, comment out the `git` dependencies and uncomment the `path`
-dependencies pointing at `../dan`.
+The Ootle crates (`ootle-rs`, `tari_template_lib_types`, `tari_ootle_common_types`) are
+pulled from crates.io in `Cargo.toml`. To develop against a local checkout, comment out the
+crates.io dependencies and uncomment the `path` dependencies pointing at `../dan`.
