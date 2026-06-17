@@ -49,7 +49,7 @@ const DEFAULT_FEE: u64 = 1_000;
 const TRANSACTION_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Parser)]
-#[command(name = "ootle", about = "Ootle wallet CLI")]
+#[command(name = "ootle-wallet", about = "Ootle wallet CLI")]
 struct Cli {
     #[command(flatten)]
     common: CommonArgs,
@@ -1079,7 +1079,7 @@ fn resolve_network(common: &CommonArgs, store: &WalletStore) -> anyhow::Result<N
         ),
         (_, Some(db)) => Ok(db),
         (Some(flag), None) => Ok(flag),
-        (None, None) => bail!("Wallet is not set up. Run `ootle setup` first"),
+        (None, None) => bail!("Wallet is not set up. Run `ootle-wallet setup` first"),
     }
 }
 
@@ -1091,7 +1091,7 @@ fn load_cipher_seed(
 ) -> anyhow::Result<(CipherSeed, Option<SafePassword>)> {
     let enciphered = store
         .enciphered_cipher_seed()?
-        .ok_or_else(|| anyhow::anyhow!("Wallet is not set up. Run `ootle setup` first"))?;
+        .ok_or_else(|| anyhow::anyhow!("Wallet is not set up. Run `ootle-wallet setup` first"))?;
     let passphrase = common.password.clone().map(SafePassword::from);
     match CipherSeed::from_enciphered_bytes(&enciphered, passphrase.clone()) {
         Ok(seed) => Ok((seed, passphrase)),
