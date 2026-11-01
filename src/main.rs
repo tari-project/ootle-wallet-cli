@@ -121,6 +121,9 @@ enum Command {
             short = 's',
             long,
             default_value_t = true,
+            action = clap::ArgAction::Set,
+            num_args = 0..=1,
+            default_missing_value = "true",
             help = "Set the new account as the default account"
         )]
         set_default: bool,
@@ -385,7 +388,18 @@ async fn main() -> Result<(), anyhow::Error> {
                 let network: Network = value
                     .parse()
                     .map_err(|e| anyhow::anyhow!("invalid network '{value}': {e:?}"))?;
+                let prev_network = store.network()?;
                 store.set_network(network)?;
+                // If the stored indexer URL was the previous network's built-in default,
+                // update or clear it so commands on the new network do not hit the old indexer.
+                if let Some(prev_default) = prev_network.and_then(known_default_indexer_url)
+                    && store.indexer_url()?.as_deref() == Some(prev_default)
+                {
+                    match known_default_indexer_url(network) {
+                        Some(new_default) => store.set_indexer_url(new_default)?,
+                        None => store.clear_indexer_url()?,
+                    }
+                }
                 // The account keys are network-independent, but the stored address
                 // encodings include the network and must be rewritten
                 store.update_account_addresses(network)?;
@@ -674,9 +688,10 @@ async fn setup(
     };
 
     // 3. Optional passphrase protecting the seed
-    let passphrase = match common.password.as_ref() {
-        Some(p) => Some(SafePassword::from(p.clone())),
-        None => prompt_new_passphrase()?.map(|p| SafePassword::from(p.to_string())),
+    let passphrase = match common.password.as_deref() {
+        Some(p) => normalize_passphrase(p),
+        None if interactive => prompt_new_passphrase()?.map(|p| SafePassword::from(p.to_string())),
+        None => None,
     };
 
     // 4. Create or restore the seed
@@ -1083,6 +1098,14 @@ fn resolve_network(common: &CommonArgs, store: &WalletStore) -> anyhow::Result<N
     }
 }
 
+fn normalize_passphrase(password: &str) -> Option<SafePassword> {
+    if password.is_empty() {
+        None
+    } else {
+        Some(SafePassword::from(password.to_string()))
+    }
+}
+
 /// Loads and deciphers the wallet cipher seed, prompting for the passphrase if one is
 /// required and was not provided.
 fn load_cipher_seed(
@@ -1092,7 +1115,7 @@ fn load_cipher_seed(
     let enciphered = store
         .enciphered_cipher_seed()?
         .ok_or_else(|| anyhow::anyhow!("Wallet is not set up. Run `ootle-wallet setup` first"))?;
-    let passphrase = common.password.clone().map(SafePassword::from);
+    let passphrase = common.password.as_deref().and_then(normalize_passphrase);
     match CipherSeed::from_enciphered_bytes(&enciphered, passphrase.clone()) {
         Ok(seed) => Ok((seed, passphrase)),
         Err(_) if passphrase.is_none() => {
@@ -1235,4 +1258,87 @@ fn write_to_json_file<T: serde::Serialize, P: AsRef<Path>>(
         .context("failed to open file for writing")?;
     serde_json::to_writer_pretty(&mut file, data).context("failed to encode data to file")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_definition_and_flags_are_valid() {
+        Cli::command().debug_assert();
+
+        let cli = Cli::try_parse_from([
+            "ootle-wallet",
+            "-n",
+            "esmeralda",
+            "setup",
+            "--account-name",
+            "main",
+            "--no-fund",
+        ])
+        .unwrap();
+        assert_eq!(cli.common.network, Some(Network::Esmeralda));
+
+        // `create-account --set-default` defaults to true, accepts `--set-default`, and accepts `false`.
+        let default_cli =
+            Cli::try_parse_from(["ootle-wallet", "create-account", "--name", "alice"]).unwrap();
+        assert!(matches!(
+            default_cli.command,
+            Command::CreateAccount {
+                set_default: true,
+                ..
+            }
+        ));
+
+        let false_cli = Cli::try_parse_from([
+            "ootle-wallet",
+            "create-account",
+            "--name",
+            "bob",
+            "--set-default",
+            "false",
+        ])
+        .unwrap();
+        assert!(matches!(
+            false_cli.command,
+            Command::CreateAccount {
+                set_default: false,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn non_interactive_setup_and_empty_password_do_not_prompt() {
+        let mut store = WalletStore::open(":memory:").unwrap();
+        let common = CommonArgs {
+            database_file: Path::new(":memory:").into(),
+            indexer_url: None,
+            network: Some(Network::Esmeralda),
+            password: Some(String::new()),
+        };
+
+        setup(
+            &common,
+            &mut store,
+            Some("main".to_string()),
+            false,
+            true,
+            DEFAULT_FEE,
+        )
+        .await
+        .unwrap();
+
+        // Subsequent commands without `--password` must decipher the seed without prompting.
+        let common_no_pwd = CommonArgs {
+            database_file: Path::new(":memory:").into(),
+            indexer_url: None,
+            network: None,
+            password: None,
+        };
+        let (_, passphrase) = load_cipher_seed(&common_no_pwd, &store).unwrap();
+        assert!(passphrase.is_none());
+    }
 }

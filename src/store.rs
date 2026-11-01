@@ -120,8 +120,10 @@ impl WalletStore {
 
     /// Rewrites the stored account addresses for a new network. The underlying keys are
     /// network-independent; only the address encoding (and its network prefix) changes.
-    pub fn update_account_addresses(&self, network: Network) -> anyhow::Result<()> {
-        for account in self.list_accounts()? {
+    pub fn update_account_addresses(&mut self, network: Network) -> anyhow::Result<()> {
+        let accounts = self.list_accounts()?;
+        let tx = self.conn.transaction()?;
+        for account in accounts {
             let view_key = account.view_public_key.parse().map_err(|e| {
                 anyhow::anyhow!("invalid view public key in account '{}': {e}", account.name)
             })?;
@@ -132,11 +134,12 @@ impl WalletStore {
                 )
             })?;
             let address = Address::new(network, view_key, account_key);
-            self.conn.execute(
+            tx.execute(
                 "UPDATE accounts SET address = ?1 WHERE name = ?2",
                 params![address.to_string(), account.name],
             )?;
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -269,15 +272,16 @@ impl WalletStore {
         Ok(count as u64)
     }
 
-    pub fn set_default_account(&self, name: &str) -> anyhow::Result<()> {
+    pub fn set_default_account(&mut self, name: &str) -> anyhow::Result<()> {
         // Validate it exists first
         self.get_account(Some(name))?;
-        self.conn
-            .execute("UPDATE accounts SET is_default = 0", [])?;
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+        tx.execute("UPDATE accounts SET is_default = 0", [])?;
+        tx.execute(
             "UPDATE accounts SET is_default = 1 WHERE name = ?1",
             params![name],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
