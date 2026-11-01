@@ -57,11 +57,15 @@ impl<'t> Table<'t, '_> {
     }
 
     pub fn render<T: Write>(&self, out: &mut T) -> io::Result<()> {
-        self.render_titles(out)?;
-        out.write_all(b"\n")?;
-        self.render_separator(out)?;
-        if !self.rows.is_empty() {
+        if self.titles.is_some() {
+            self.render_titles(out)?;
             out.write_all(b"\n")?;
+            self.render_separator(out)?;
+            if !self.rows.is_empty() {
+                out.write_all(b"\n")?;
+            }
+        }
+        if !self.rows.is_empty() {
             self.render_rows(out)?;
             out.write_all(b"\n")?;
         }
@@ -81,7 +85,8 @@ impl<'t> Table<'t, '_> {
         let title_width = self
             .titles
             .as_ref()
-            .map(|titles| titles[idx].len())
+            .and_then(|titles| titles.get(idx))
+            .map(|title| title.len())
             .unwrap_or(0);
         let rows_width = self.rows.iter().fold(0, |max, r| {
             if idx < r.len() {
@@ -133,17 +138,22 @@ impl<'t> Table<'t, '_> {
     }
 
     fn render_separator<T: Write>(&self, out: &mut T) -> io::Result<()> {
-        if let Some(rows_len) = self.rows.first().map(|r| r.len()) {
-            for i in 0..rows_len {
-                let width = self.col_width(i);
-                let pad_left = if i == 0 { "" } else { " " };
-                out.write_all(pad_left.as_bytes())?;
-                let sep = "-".repeat(width);
-                out.write_all(sep.as_bytes())?;
-                out.write_all(" ".as_bytes())?;
-                if i < rows_len - 1 {
-                    out.write_all(self.delim_str.as_bytes())?;
-                }
+        if self.rows.is_empty() {
+            return Ok(());
+        }
+        let num_cols = cmp::max(
+            self.titles.as_ref().map(|t| t.len()).unwrap_or(0),
+            self.rows.iter().map(|r| r.len()).max().unwrap_or(0),
+        );
+        for i in 0..num_cols {
+            let width = self.col_width(i);
+            let pad_left = if i == 0 { "" } else { " " };
+            out.write_all(pad_left.as_bytes())?;
+            let sep = "-".repeat(width);
+            out.write_all(sep.as_bytes())?;
+            out.write_all(" ".as_bytes())?;
+            if i < num_cols - 1 {
+                out.write_all(self.delim_str.as_bytes())?;
             }
         }
         Ok(())
@@ -197,6 +207,33 @@ mod test {
             String::from_utf8_lossy(&buf.into_inner()),
             "Name    | Age | Telephone Number | Favourite Headwear \n------- | --- | ---------------- | \
              ------------------ \nTrevor  | 132 | +123 12323223    | Pith Helmet        \n\nHatless | 2   \n"
+        );
+    }
+
+    #[test]
+    fn renders_rows_without_titles() {
+        let mut table = Table::new();
+        table.add_row(table_row!["Alice", 42]);
+        table.add_row(table_row!["Bob", 7]);
+        let mut buf = io::Cursor::new(Vec::new());
+        table.render(&mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&buf.into_inner()),
+            "Alice | 42 \nBob   | 7  \n"
+        );
+    }
+
+    #[test]
+    fn renders_rows_wider_than_titles_and_short_first_row() {
+        let mut table = Table::new();
+        table.set_titles(vec!["Col1", "Col2"]);
+        table.add_row(table_row!["short"]);
+        table.add_row(table_row!["a", "b", "extra_col"]);
+        let mut buf = io::Cursor::new(Vec::new());
+        table.render(&mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&buf.into_inner()),
+            "Col1  | Col2 \n----- | ---- | --------- \nshort \na     | b    | extra_col \n"
         );
     }
 }

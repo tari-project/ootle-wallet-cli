@@ -3,19 +3,46 @@
 
 //! Small helpers for interactive prompts during `setup`.
 
-use std::io::Write;
+use std::io::{BufRead, Write};
 
 use anyhow::Context;
 use zeroize::Zeroizing;
 
+fn read_trimmed_line<R: BufRead>(reader: &mut R) -> anyhow::Result<String> {
+    let mut line = String::new();
+    let bytes_read = reader
+        .read_line(&mut line)
+        .context("failed to read input")?;
+    if bytes_read == 0 {
+        anyhow::bail!("unexpected end of input while reading prompt");
+    }
+    Ok(line.trim().to_string())
+}
+
+fn read_password_line<R: BufRead>(reader: &mut R) -> anyhow::Result<Zeroizing<String>> {
+    let mut line = Zeroizing::new(String::new());
+    let bytes_read = reader
+        .read_line(&mut line)
+        .context("failed to read passphrase")?;
+    if bytes_read == 0 {
+        anyhow::bail!("unexpected end of input while reading passphrase");
+    }
+    if line.ends_with("\r\n") {
+        let new_len = line.len() - 2;
+        line.truncate(new_len);
+    } else if line.ends_with('\n') || line.ends_with('\r') {
+        let new_len = line.len() - 1;
+        line.truncate(new_len);
+    }
+    Ok(line)
+}
+
 pub fn prompt_line(message: &str) -> anyhow::Result<String> {
     print!("{message}");
     std::io::stdout().flush()?;
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .context("failed to read input")?;
-    Ok(line.trim().to_string())
+    let stdin = std::io::stdin();
+    let mut lock = stdin.lock();
+    read_trimmed_line(&mut lock)
 }
 
 pub fn prompt_with_default(message: &str, default: &str) -> anyhow::Result<String> {
@@ -29,14 +56,16 @@ pub fn prompt_with_default(message: &str, default: &str) -> anyhow::Result<Strin
 
 pub fn prompt_yes_no(message: &str, default: bool) -> anyhow::Result<bool> {
     let hint = if default { "Y/n" } else { "y/N" };
-    let input = prompt_line(&format!("{message} [{hint}]: "))?;
-    match input.to_lowercase().as_str() {
-        "" => Ok(default),
-        "y" | "yes" => Ok(true),
-        "n" | "no" => Ok(false),
-        other => {
-            cli_println!(White, "Please answer 'y' or 'n', got '{}'", other);
-            prompt_yes_no(message, default)
+    let prompt = format!("{message} [{hint}]: ");
+    loop {
+        let input = prompt_line(&prompt)?;
+        match input.to_lowercase().as_str() {
+            "" => return Ok(default),
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            other => {
+                cli_println!(White, "Please answer 'y' or 'n', got '{}'", other);
+            }
         }
     }
 }
@@ -50,7 +79,11 @@ pub fn prompt_password_hidden(message: &str) -> anyhow::Result<Zeroizing<String>
             rpassword::prompt_password(message).context("failed to read passphrase")?,
         ))
     } else {
-        Ok(Zeroizing::new(prompt_line(message)?))
+        print!("{message}");
+        std::io::stdout().flush()?;
+        let stdin = std::io::stdin();
+        let mut lock = stdin.lock();
+        read_password_line(&mut lock)
     }
 }
 
@@ -67,4 +100,31 @@ pub fn prompt_new_passphrase() -> anyhow::Result<Option<Zeroizing<String>>> {
         anyhow::bail!("Passphrases do not match");
     }
     Ok(Some(passphrase))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    #[test]
+    fn password_line_preserves_surrounding_whitespace() {
+        let mut crlf = Cursor::new(b"  correct horse battery staple  \r\n");
+        let pass = read_password_line(&mut crlf).unwrap();
+        assert_eq!(&*pass, "  correct horse battery staple  ");
+
+        let mut lf = Cursor::new(b"\tleading-tab\n");
+        let pass_lf = read_password_line(&mut lf).unwrap();
+        assert_eq!(&*pass_lf, "\tleading-tab");
+    }
+
+    #[test]
+    fn trimmed_and_password_lines_reject_eof() {
+        let mut empty = Cursor::new(b"");
+        assert!(read_trimmed_line(&mut empty).is_err());
+
+        let mut empty_pass = Cursor::new(b"");
+        assert!(read_password_line(&mut empty_pass).is_err());
+    }
 }
